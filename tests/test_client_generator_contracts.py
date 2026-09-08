@@ -264,13 +264,13 @@ def test_generated_clients_honor_openapi_request_response_contracts(
         client_module = importlib.import_module(
             f"{generated_contract_package}.clients.async_client"
         )
-        client = client_module.AsyncClient()
+        client = client_module.AsyncClient(timeout=1.23)
         thing, upload, download, empty = asyncio.run(_run_async_contract(client))
     else:
         client_module = importlib.import_module(
             f"{generated_contract_package}.clients.sync_client"
         )
-        client = client_module.SyncClient()
+        client = client_module.SyncClient(timeout=1.23)
         thing = client.getThing(X_Test_Header="required")
         upload = client.uploadDocument(
             data={"file": ("doc.txt", b"hello", "text/plain")}
@@ -287,6 +287,12 @@ def test_generated_clients_honor_openapi_request_response_contracts(
     assert thing_request.headers["X-Test-Header"] == "required"
     assert thing_request.headers["X-Optional-Header"] == "AU"
     assert thing_request.url.params["brand"] == "NRMA"
+    assert thing_request.extensions["timeout"] == {
+        "connect": 1.23,
+        "read": 1.23,
+        "write": 1.23,
+        "pool": 1.23,
+    }
 
     upload_request = requests[1]
     assert upload_request.headers["content-type"].startswith("multipart/form-data")
@@ -431,8 +437,11 @@ def test_generated_sse_data_payloads_use_declared_schema(
     respx_mock,
     async_client,
 ):
-    respx_mock.get("http://testserver/events").mock(
-        return_value=httpx.Response(
+    requests: list[httpx.Request] = []
+
+    def events_handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
             200,
             content=(
                 b"event: update\n"
@@ -441,6 +450,9 @@ def test_generated_sse_data_payloads_use_declared_schema(
             ),
             headers={"content-type": "text/event-stream"},
         )
+
+    respx_mock.get("http://testserver/events").mock(
+        side_effect=events_handler
     )
     models = importlib.import_module(f"{generated_contract_package}.models")
 
@@ -448,13 +460,13 @@ def test_generated_sse_data_payloads_use_declared_schema(
         client_module = importlib.import_module(
             f"{generated_contract_package}.clients.async_client"
         )
-        client = client_module.AsyncClient()
+        client = client_module.AsyncClient(timeout=2.34)
         first_data_item = asyncio.run(_first_async_sse_data_item(client))
     else:
         client_module = importlib.import_module(
             f"{generated_contract_package}.clients.sync_client"
         )
-        client = client_module.SyncClient()
+        client = client_module.SyncClient(timeout=2.34)
         first_data_item = next(
             item for item in client.getEvents() if not isinstance(item, str)
         )
@@ -462,6 +474,12 @@ def test_generated_sse_data_payloads_use_declared_schema(
     assert isinstance(first_data_item, models.EventPayload)
     assert first_data_item.message == "ok"
     assert first_data_item.value == 42.5
+    assert requests[0].extensions["timeout"] == {
+        "connect": 2.34,
+        "read": 2.34,
+        "write": 2.34,
+        "pool": 2.34,
+    }
 
 
 async def _run_async_configured_contract(client):
