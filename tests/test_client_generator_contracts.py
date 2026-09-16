@@ -5,6 +5,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -384,10 +385,17 @@ def test_generated_clients_resolve_configured_parameter_sources(
 
         class Client(client_module.AsyncClient):
             getter_calls: int = 0
+            getter_kwargs: dict[str, Any] = {}
+            token_kwargs: dict[str, Any] = {}
 
-            async def get_dynamic_header(self) -> str:
+            async def get_dynamic_header(self, **kwargs: Any) -> str:
                 self.getter_calls += 1
+                self.getter_kwargs = kwargs
                 return "from-getter"
+
+            async def get_access_token(self, **kwargs: Any) -> str | None:
+                self.token_kwargs = kwargs
+                return None
 
         client = Client(test_header="from-client", optional_header="from-class")
         asyncio.run(_run_async_configured_contract(client))
@@ -399,10 +407,17 @@ def test_generated_clients_resolve_configured_parameter_sources(
 
         class Client(client_module.SyncClient):
             getter_calls: int = 0
+            getter_kwargs: dict[str, Any] = {}
+            token_kwargs: dict[str, Any] = {}
 
-            def get_dynamic_header(self) -> str:
+            def get_dynamic_header(self, **kwargs: Any) -> str:
                 self.getter_calls += 1
+                self.getter_kwargs = kwargs
                 return "from-getter"
+
+            def get_access_token(self, **kwargs: Any) -> str | None:
+                self.token_kwargs = kwargs
+                return None
 
         client = Client(test_header="from-client", optional_header="from-class")
         client.getThing(product_brand="CGU")
@@ -413,6 +428,19 @@ def test_generated_clients_resolve_configured_parameter_sources(
             product_brand="AMI",
         )
         assert client.getter_calls == 1
+
+    assert client.getter_kwargs == {
+        "product_brand": "CGU",
+        "test_header": None,
+        "optional_header": None,
+        "dynamic_header": None,
+    }
+    assert client.token_kwargs == {
+        "product_brand": "AMI",
+        "test_header": "from-override",
+        "optional_header": "optional-override",
+        "dynamic_header": "function-override",
+    }
 
     first_request = requests[0]
     assert first_request.headers["X-Test-Header"] == "from-client"

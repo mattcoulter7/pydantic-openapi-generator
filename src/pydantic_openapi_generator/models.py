@@ -95,6 +95,7 @@ class GeneratedParameter(BaseModel):
 
 class ServiceOperation(BaseModel):
     params: str
+    call_kwargs: List[str] = Field(default_factory=list)
     operation_id: str
     path_params: List[GeneratedParameter] = Field(default_factory=list)
     query_params: List[GeneratedParameter]

@@ -27,7 +27,7 @@ class AsyncClient(BaseModel):
     {{ field.code_name }}: {{ field.field_type_hint }}{% if field.field_default is not none %} = {{ field.field_default }}{% endif %}{{ "\n" }}
 {% endfor %}
 
-    async def get_access_token(self) -> Optional[str]:
+    async def get_access_token(self, **kwargs: Any) -> Optional[str]:
 {% if env_token_name is not none %}
         try:
             return os.environ["{{ env_token_name }}"]
@@ -48,7 +48,7 @@ class AsyncClient(BaseModel):
 {% endif %}
 
 {% for function in client_functions %}
-    async def {{ function.getter_name }}(self) -> {{ function.base_type_hint }}:
+    async def {{ function.getter_name }}(self, **kwargs: Any) -> {{ function.base_type_hint }}:
         raise NotImplementedError
 
 {% endfor %}
@@ -59,6 +59,11 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
 {{ op.return_type.return_type_hint or "None" }}
 {%- endif -%}:
         base_url = self.base_url
+        _request_kwargs = {
+{% for kwarg in op.call_kwargs %}
+            "{{ kwarg }}": {{ kwarg }},
+{% endfor %}
+        }
 {% for param in op.path_params + op.query_params + op.header_params %}
 {% if param.source == "ClassVar" %}
 {% if param.is_secret %}
@@ -67,7 +72,7 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
         {{ param.local_name }} = {{ param.code_name }} if {{ param.code_name }} is not None else self.{{ param.code_name }}
 {% endif %}
 {% elif param.source == "Function" %}
-        {{ param.local_name }} = {{ param.code_name }} if {{ param.code_name }} is not None else await self.{{ param.getter_name }}()
+        {{ param.local_name }} = {{ param.code_name }} if {{ param.code_name }} is not None else await self.{{ param.getter_name }}(**_request_kwargs)
 {% endif %}
 {% endfor %}
         path = f"{{ op.path_name }}"
@@ -89,7 +94,7 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
         }
         headers = {k: v for (k, v) in headers.items() if v is not None}
 
-        _token = await self.get_access_token()
+        _token = await self.get_access_token(**_request_kwargs)
         if _token:
             headers["Authorization"] = f"Bearer {_token}"
 

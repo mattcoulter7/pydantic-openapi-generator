@@ -807,6 +807,7 @@ def generate_clients(
         query_params = generate_operation_parameters(op, generator_config, "query")
         header_params = generate_operation_parameters(op, generator_config, "header")
         all_params = path_params + query_params + header_params
+        call_kwargs = [param.code_name for param in all_params]
         params = _method_signature(all_params, _body_signature_param(op) if body_param is not None else None)
         path_name = _resolved_path_name(path_name, path_params)
 
@@ -816,12 +817,16 @@ def generate_clients(
             norm_ph = common.normalize_symbol(ph)
             if norm_ph not in existing_param_names and norm_ph:
                 params = f"{norm_ph}: Any, " + params
+                call_kwargs.insert(0, norm_ph)
+        if body_param is not None:
+            call_kwargs.append("data")
 
         operation_id = generate_operation_id(op, http_operation, path_name)
         return_type = generate_return_type(op)
 
         so = ServiceOperation(
             params=params,
+            call_kwargs=call_kwargs,
             operation_id=operation_id,
             path_params=path_params,
             query_params=query_params,
