@@ -39,6 +39,7 @@ from openapi_pydantic.v3.v3_1 import (
 from openapi_pydantic.v3.v3_1.parameter import Parameter as Parameter31
 
 from pydantic_openapi_generator.common import PydanticVersion
+from pydantic_openapi_generator.config.custom_kwarg import CustomKwargConfiguration
 from pydantic_openapi_generator.config.generator_config import (
     PydanticOpenAPIGeneratorConfig,
 )
@@ -53,6 +54,7 @@ from pydantic_openapi_generator.language_converters.python.model_generator impor
     type_converter,
 )
 from pydantic_openapi_generator.models import (
+    GeneratedCustomKwarg,
     GeneratedParameter,
     LibraryConfig,
     Model,
@@ -309,7 +311,10 @@ def _resolve_parameter(
     return config.parameter_configuration_for(param.name).resolve_parameter(param)
 
 
-def _method_signature(parameters: List[GeneratedParameter], body_param: Optional[str]) -> str:
+SignatureParameter = Union[GeneratedParameter, GeneratedCustomKwarg]
+
+
+def _method_signature(parameters: List[SignatureParameter], body_param: Optional[str]) -> str:
     required_params: List[str] = []
     default_params: List[str] = []
 
@@ -359,6 +364,42 @@ def _body_signature_param(operation: Operation) -> Optional[str]:
 
 def _parameter_dict_items(parameters: List[GeneratedParameter]) -> List[str]:
     return [f"{p.wire_name!r}: {p.value_expression}" for p in parameters]
+
+
+def _custom_kwarg_applies(
+    custom_kwarg: CustomKwargConfiguration,
+    parameters: List[GeneratedParameter],
+) -> bool:
+    condition = custom_kwarg.condition
+    if condition is None:
+        return True
+
+    if condition.type == "exists":
+        ref = common.normalize_symbol(condition.ref)
+        return any(parameter.code_name == ref for parameter in parameters)
+
+    return False
+
+
+def resolve_custom_kwargs(
+    configured_custom_kwargs: List[CustomKwargConfiguration],
+    parameters: List[GeneratedParameter],
+) -> List[GeneratedCustomKwarg]:
+    custom_kwargs = [
+        custom_kwarg.resolve_custom_kwarg()
+        for custom_kwarg in configured_custom_kwargs
+        if _custom_kwarg_applies(custom_kwarg, parameters)
+    ]
+
+    parameter_code_names = {parameter.code_name for parameter in parameters}
+    collisions = sorted(
+        custom_kwarg.code_name for custom_kwarg in custom_kwargs if custom_kwarg.code_name in parameter_code_names
+    )
+    if collisions:
+        collision_list = ", ".join(collisions)
+        raise ValueError(f"Custom kwarg collides with generated API parameter code_name: {collision_list}")
+
+    return custom_kwargs
 
 
 def _resolved_path_name(path_name: str, path_params: List[GeneratedParameter]) -> str:
@@ -806,13 +847,15 @@ def generate_clients(
         path_params = generate_operation_parameters(op, generator_config, "path")
         query_params = generate_operation_parameters(op, generator_config, "query")
         header_params = generate_operation_parameters(op, generator_config, "header")
-        all_params = path_params + query_params + header_params
-        call_kwargs = [param.code_name for param in all_params]
-        params = _method_signature(all_params, _body_signature_param(op) if body_param is not None else None)
+        api_params = path_params + query_params + header_params
+        custom_kwargs = resolve_custom_kwargs(generator_config.custom_kwargs, api_params)
+        signature_params: List[SignatureParameter] = api_params + custom_kwargs
+        call_kwargs = [param.code_name for param in signature_params]
+        params = _method_signature(signature_params, _body_signature_param(op) if body_param is not None else None)
         path_name = _resolved_path_name(path_name, path_params)
 
         placeholder_names = [m.group(1) for m in re.finditer(r"\{([^}/]+)\}", path_name)]
-        existing_param_names = {p.code_name for p in all_params}
+        existing_param_names = {p.code_name for p in signature_params}
         for ph in placeholder_names:
             norm_ph = common.normalize_symbol(ph)
             if norm_ph not in existing_param_names and norm_ph:
@@ -831,6 +874,7 @@ def generate_clients(
             path_params=path_params,
             query_params=query_params,
             header_params=header_params,
+            custom_kwargs=custom_kwargs,
             return_type=return_type,
             operation=op,
             pathItem=path_obj,

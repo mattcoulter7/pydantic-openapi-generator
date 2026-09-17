@@ -93,6 +93,13 @@ class GeneratedParameter(BaseModel):
     value_expression: Optional[str] = None
 
 
+class GeneratedCustomKwarg(BaseModel):
+    code_name: str
+    type_hint: str
+    required: bool
+    default: Optional[str] = None
+
+
 class ServiceOperation(BaseModel):
     params: str
     call_kwargs: List[str] = Field(default_factory=list)
@@ -100,6 +107,7 @@ class ServiceOperation(BaseModel):
     path_params: List[GeneratedParameter] = Field(default_factory=list)
     query_params: List[GeneratedParameter]
     header_params: List[GeneratedParameter]
+    custom_kwargs: List[GeneratedCustomKwarg] = Field(default_factory=list)
     return_type: OpReturnType
     operation: Operation
     pathItem: PathItem
