@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import inspect
 import json
 import shutil
 import sys
@@ -358,9 +359,48 @@ parameters:
 """
 
 
+CUSTOM_KWARGS_CONFIG_CONTENT = """
+parameters:
+  - name: X-Test-Header
+    type: ClassVar
+    code_name: test_header
+  - name: X-Function-Header
+    type: Function
+    code_name: dynamic_header
+  - name: brand
+    type: Kwarg
+    code_name: product_brand
+
+custom_kwargs:
+  - kwarg: claimIdentifier
+    required: true
+    schema:
+      type: string
+    condition:
+      type: exists
+      ref: dynamic_header
+  - kwarg: someContext
+    required: false
+    schema:
+      type: integer
+      format: int64
+  - kwarg: labels
+    required: false
+    schema:
+      type: array
+      items:
+        type: string
+"""
+
+
 @pytest.fixture
 def generated_configured_contract_package():
     yield from _generated_package(CONFIG_CONTENT)
+
+
+@pytest.fixture
+def generated_custom_kwargs_contract_package():
+    yield from _generated_package(CUSTOM_KWARGS_CONFIG_CONTENT)
 
 
 @pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
@@ -460,6 +500,93 @@ def test_generated_clients_resolve_configured_parameter_sources(
 
 @pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
 @pytest.mark.parametrize("async_client", [False, True])
+def test_generated_clients_pass_custom_kwargs_to_request_context_only(
+    generated_custom_kwargs_contract_package,
+    respx_mock,
+    async_client,
+):
+    requests: list[httpx.Request] = []
+
+    def thing_handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(206, json={"message": "partial"})
+
+    respx_mock.get("http://testserver/things").mock(side_effect=thing_handler)
+
+    if async_client:
+        client_module = importlib.import_module(
+            f"{generated_custom_kwargs_contract_package}.clients.async_client"
+        )
+
+        class Client(client_module.AsyncClient):
+            getter_kwargs: dict[str, Any] = {}
+            token_kwargs: dict[str, Any] = {}
+
+            async def get_dynamic_header(self, claimIdentifier: str, **kwargs: Any) -> str:
+                self.getter_kwargs = {"claimIdentifier": claimIdentifier, **kwargs}
+                return f"user-{claimIdentifier}"
+
+            async def get_access_token(self, **kwargs: Any) -> str | None:
+                self.token_kwargs = kwargs
+                return None
+
+        client = Client(test_header="from-client")
+        asyncio.run(client.getThing(claimIdentifier="CLM-123", product_brand="CGU", someContext=42))
+    else:
+        client_module = importlib.import_module(
+            f"{generated_custom_kwargs_contract_package}.clients.sync_client"
+        )
+
+        class Client(client_module.SyncClient):
+            getter_kwargs: dict[str, Any] = {}
+            token_kwargs: dict[str, Any] = {}
+
+            def get_dynamic_header(self, claimIdentifier: str, **kwargs: Any) -> str:
+                self.getter_kwargs = {"claimIdentifier": claimIdentifier, **kwargs}
+                return f"user-{claimIdentifier}"
+
+            def get_access_token(self, **kwargs: Any) -> str | None:
+                self.token_kwargs = kwargs
+                return None
+
+        client = Client(test_header="from-client")
+        client.getThing(claimIdentifier="CLM-123", product_brand="CGU", someContext=42)
+
+    get_thing_signature = inspect.signature(client.getThing)
+    assert str(get_thing_signature.parameters["claimIdentifier"].annotation) == "str"
+    assert str(get_thing_signature.parameters["someContext"].annotation) == "Optional[int]"
+    assert get_thing_signature.parameters["someContext"].default is None
+    assert str(get_thing_signature.parameters["labels"].annotation) == "Optional[List[str]]"
+
+    delete_signature = inspect.signature(client.deleteThing)
+    assert "claimIdentifier" not in delete_signature.parameters
+    assert "someContext" in delete_signature.parameters
+
+    assert client.getter_kwargs == {
+        "claimIdentifier": "CLM-123",
+        "X_Optional_Header": "AU",
+        "test_header": None,
+        "dynamic_header": None,
+        "product_brand": "CGU",
+        "someContext": 42,
+        "labels": None,
+    }
+    assert client.token_kwargs == client.getter_kwargs
+
+    request = requests[0]
+    assert request.headers["X-Test-Header"] == "from-client"
+    assert request.headers["X-Function-Header"] == "user-CLM-123"
+    assert request.url.params["brand"] == "CGU"
+    assert "claimIdentifier" not in request.url.params
+    assert "someContext" not in request.url.params
+    assert "labels" not in request.url.params
+    assert "claimIdentifier" not in request.headers
+    assert "someContext" not in request.headers
+    assert "labels" not in request.headers
+
+
+@pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
+@pytest.mark.parametrize("async_client", [False, True])
 def test_generated_sse_data_payloads_use_declared_schema(
     generated_contract_package,
     respx_mock,
@@ -546,6 +673,63 @@ parameters:
 """
 
     with pytest.raises(ValueError, match="code_name 'shared'"):
+        list(_generated_package(config_content))
+
+
+def test_custom_kwarg_without_schema_fails_config_validation():
+    config_content = """
+custom_kwargs:
+  - kwarg: claimIdentifier
+    required: true
+"""
+
+    with pytest.raises(ValidationError, match="schema"):
+        list(_generated_package(config_content))
+
+
+def test_custom_kwarg_schema_that_converts_to_any_fails_config_validation():
+    config_content = """
+custom_kwargs:
+  - kwarg: claimIdentifier
+    required: true
+    schema: {}
+"""
+
+    with pytest.raises(ValidationError, match="must define a supported OpenAPI schema"):
+        list(_generated_package(config_content))
+
+
+def test_duplicate_custom_kwarg_names_fail_config_validation():
+    config_content = """
+custom_kwargs:
+  - kwarg: claimIdentifier
+    required: true
+    schema:
+      type: string
+  - kwarg: claimIdentifier
+    required: true
+    schema:
+      type: string
+"""
+
+    with pytest.raises(ValueError, match="Duplicate custom kwarg configuration for: claimIdentifier"):
+        list(_generated_package(config_content))
+
+
+def test_custom_kwarg_collision_with_api_parameter_fails_generation():
+    config_content = """
+parameters:
+  - name: brand
+    type: Kwarg
+    code_name: product_brand
+custom_kwargs:
+  - kwarg: product_brand
+    required: true
+    schema:
+      type: string
+"""
+
+    with pytest.raises(ValueError, match="collides with generated API parameter code_name: product_brand"):
         list(_generated_package(config_content))
 
 

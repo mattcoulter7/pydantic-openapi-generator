@@ -14,6 +14,7 @@ from pydantic_openapi_generator.language_converters.python.model_generator impor
 )
 
 Parameter = Union[Parameter30, Parameter31]
+SchemaDefinition = Union[Schema30, Schema31, Reference30, Reference31]
 
 
 def lower_code_name(value: str) -> str:
@@ -34,12 +35,18 @@ def optional_type(type_hint: str) -> str:
 
 
 def parameter_type_hint(param: Parameter, required: bool) -> str:
-    if isinstance(param.param_schema, (Schema30, Schema31)):
-        return type_converter(param.param_schema, required).converted_type
-    if isinstance(param.param_schema, (Reference30, Reference31)):
-        model_name = common.normalize_symbol(param.param_schema.ref.split("/")[-1])
-        return model_name if required else f"Optional[{model_name}]"
+    if isinstance(param.param_schema, (Schema30, Schema31, Reference30, Reference31)):
+        return schema_type_hint(param.param_schema, required=required)
     return "Any"
+
+
+def schema_type_hint(schema: SchemaDefinition, *, required: bool) -> str:
+    if isinstance(schema, (Schema30, Schema31)):
+        return type_converter(schema, required).converted_type
+    if isinstance(schema, (Reference30, Reference31)):
+        model_name = common.normalize_symbol(schema.ref.split("/")[-1])
+        return model_name if required else f"Optional[{model_name}]"
+    raise ValueError(f"Unsupported schema type: {type(schema)!r}")
 
 
 def parameter_base_type_hint(param: Parameter) -> str:
