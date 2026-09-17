@@ -392,7 +392,9 @@ def resolve_custom_kwargs(
     ]
 
     parameter_code_names = {parameter.code_name for parameter in parameters}
-    collisions = sorted(custom_kwarg.code_name for custom_kwarg in custom_kwargs if custom_kwarg.code_name in parameter_code_names)
+    collisions = sorted(
+        custom_kwarg.code_name for custom_kwarg in custom_kwargs if custom_kwarg.code_name in parameter_code_names
+    )
     if collisions:
         collision_list = ", ".join(collisions)
         raise ValueError(f"Custom kwarg collides with generated API parameter code_name: {collision_list}")
