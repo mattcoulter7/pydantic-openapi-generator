@@ -777,21 +777,14 @@ def _response_status_handlers(
     for variant in variants:
         grouped.setdefault(variant.status_code, []).append(variant)
 
-    non_empty_keys = {
-        _variant_deserialization_key(variant)
-        for variant in variants
-        if variant.body_kind != "empty"
-    }
+    non_empty_keys = {_variant_deserialization_key(variant) for variant in variants if variant.body_kind != "empty"}
     fallback_key = next(iter(non_empty_keys)) if len(non_empty_keys) == 1 else None
 
     return [
         ResponseStatusHandler(status_code=status_code, variants=status_variants)
         for status_code, status_variants in grouped.items()
         if fallback_key is None
-        or any(
-            _variant_deserialization_key(variant) != fallback_key
-            for variant in status_variants
-        )
+        or any(_variant_deserialization_key(variant) != fallback_key for variant in status_variants)
     ]
 
 
