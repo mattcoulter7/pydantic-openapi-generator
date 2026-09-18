@@ -49,6 +49,7 @@ class OpReturnType(BaseModel):
     list_type: Optional[str] = None
     variants: List["ResponseVariant"] = Field(default_factory=list)
     status_handlers: List["ResponseStatusHandler"] = Field(default_factory=list)
+    requires_response_dispatch: bool = False
     accept_content_types: List[str] = Field(default_factory=list)
     unambiguous_content_handlers: List["ResponseContentHandler"] = Field(default_factory=list)
     return_type_hint: Optional[str] = None
