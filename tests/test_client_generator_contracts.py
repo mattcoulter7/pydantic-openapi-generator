@@ -131,6 +131,22 @@ CONTRACT_SPEC = {
                 },
             }
         },
+        "/multi-download": {
+            "get": {
+                "operationId": "multiDownload",
+                "responses": {
+                    "200": {
+                        "description": "Document",
+                        "content": {
+                            "application/json": {"schema": {"type": "string"}},
+                            "application/pdf": {
+                                "schema": {"type": "string", "format": "binary"}
+                            },
+                        },
+                    }
+                },
+            }
+        },
         "/empty": {
             "delete": {
                 "operationId": "deleteThing",
@@ -339,6 +355,46 @@ def test_generated_clients_validate_undocumented_successes_against_contract(
             client.getThing(X_Test_Header="required")
 
     assert upload.documentId == "doc-201"
+
+
+@pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
+@pytest.mark.parametrize("async_client", [False, True])
+def test_generated_clients_dispatch_same_status_by_content_type(
+    generated_contract_package,
+    respx_mock,
+    async_client,
+):
+    respx_mock.get("http://testserver/multi-download").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json="hello",
+                headers={"content-type": "application/json; charset=utf-8"},
+            ),
+            httpx.Response(
+                200,
+                content=b"%PDF-1.4",
+                headers={"content-type": "application/pdf"},
+            ),
+        ]
+    )
+
+    if async_client:
+        client_module = importlib.import_module(
+            f"{generated_contract_package}.clients.async_client"
+        )
+        client = client_module.AsyncClient()
+        json_result, pdf_result = asyncio.run(_run_async_multi_download(client))
+    else:
+        client_module = importlib.import_module(
+            f"{generated_contract_package}.clients.sync_client"
+        )
+        client = client_module.SyncClient()
+        json_result = client.multiDownload()
+        pdf_result = client.multiDownload()
+
+    assert json_result == "hello"
+    assert pdf_result == b"%PDF-1.4"
 
 
 CONFIG_CONTENT = """
@@ -659,6 +715,12 @@ async def _run_async_undocumented_successes(client):
         data={"file": ("doc.txt", b"hello", "text/plain")}
     )
     return upload
+
+
+async def _run_async_multi_download(client):
+    json_result = await client.multiDownload()
+    pdf_result = await client.multiDownload()
+    return json_result, pdf_result
 
 
 def test_duplicate_configured_code_name_fails_generation():

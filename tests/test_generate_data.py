@@ -110,6 +110,60 @@ components:
     assert set(communication_details.properties) == {"received_date", "sent_date"}
 
 
+def test_get_open_api_overlay_delete_marker_removes_nested_content(tmp_path):
+    source_path = tmp_path / "openapi.yaml"
+    overlay_path = tmp_path / "overlay.yaml"
+    source_path.write_text(
+        """
+openapi: 3.0.1
+info:
+    title: Overlay delete test
+    version: "1"
+paths:
+    /retrieve/{documentId}:
+        get:
+            operationId: retrieveDocument
+            parameters:
+                - name: documentId
+                  in: path
+                  required: true
+                  schema:
+                      type: string
+            responses:
+                "200":
+                    description: Document
+                    content:
+                        application/json:
+                            schema:
+                                type: string
+"""
+    )
+    overlay_path.write_text(
+        """
+paths:
+    /retrieve/{documentId}:
+        get:
+            responses:
+                "200":
+                    content:
+                        application/json:
+                            x-pydantic-openapi-generator-delete: true
+                        application/pdf:
+                            schema:
+                                type: string
+                                format: binary
+"""
+    )
+
+    openapi_obj, version = get_open_api(source_path, [overlay_path])
+
+    operation = openapi_obj.paths["/retrieve/{documentId}"].get
+    assert version == "3.0"
+    assert set(operation.responses["200"].content) == {"application/pdf"}
+    assert operation.operationId == "retrieveDocument"
+    assert operation.parameters[0].name == "documentId"
+
+
 def test_generate_data(model_data_with_cleanup):
     generate_data(test_data_path, test_result_path)
     assert test_result_path.exists()
