@@ -153,6 +153,20 @@ CONTRACT_SPEC = {
                 "responses": {"204": {"description": "Deleted"}},
             }
         },
+        "/accepted": {
+            "post": {
+                "operationId": "acceptThing",
+                "responses": {
+                    "200": {"description": "No result", "content": {}},
+                    "202": {
+                        "description": "Accepted",
+                        "content": {
+                            "application/json": {"schema": {"type": "string"}}
+                        },
+                    },
+                },
+            }
+        },
         "/events": {
             "get": {
                 "operationId": "getEvents",
@@ -395,6 +409,62 @@ def test_generated_clients_dispatch_same_status_by_content_type(
 
     assert json_result == "hello"
     assert pdf_result == b"%PDF-1.4"
+
+
+@pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
+@pytest.mark.parametrize("async_client", [False, True])
+def test_generated_clients_do_not_treat_empty_json_body_as_empty_variant(
+    generated_contract_package,
+    respx_mock,
+    async_client,
+):
+    respx_mock.post("http://testserver/accepted").mock(
+        return_value=httpx.Response(202, content=b"")
+    )
+    client_module = importlib.import_module(
+        f"{generated_contract_package}.clients."
+        f"{'async_client' if async_client else 'sync_client'}"
+    )
+    client_class = (
+        client_module.AsyncClient if async_client else client_module.SyncClient
+    )
+    client = client_class()
+
+    with pytest.raises(json.JSONDecodeError):
+        if async_client:
+            asyncio.run(client.acceptThing())
+        else:
+            client.acceptThing()
+
+
+@pytest.mark.parametrize("module_name", ["sync_client", "async_client"])
+def test_generated_clients_only_dispatch_for_distinct_response_behaviors(
+    generated_contract_package,
+    module_name,
+):
+    client_module = importlib.import_module(
+        f"{generated_contract_package}.clients.{module_name}"
+    )
+
+    client_class = getattr(client_module, "SyncClient", None) or getattr(
+        client_module, "AsyncClient"
+    )
+    upload_method = inspect.getsource(client_class.uploadDocument)
+    download_method = inspect.getsource(client_class.downloadDocument)
+    multi_download_method = inspect.getsource(client_class.multiDownload)
+    accepted_method = inspect.getsource(client_class.acceptThing)
+
+    assert "response.status_code" not in upload_method
+    assert upload_method.count("TypeAdapter(UploadResponse)") == 1
+    assert "response.status_code" not in download_method
+    assert download_method.count("return response.content") == 1
+    assert "response.status_code == 200" in multi_download_method
+    assert '_response_content_type == "application/json"' in multi_download_method
+    assert '_response_content_type == "application/pdf"' in multi_download_method
+    assert "if not response.content" not in accepted_method
+    assert "response.status_code == 200" in accepted_method
+    assert "response.status_code == 202" not in accepted_method
+    assert accepted_method.count("TypeAdapter(str)") == 1
 
 
 CONFIG_CONTENT = """

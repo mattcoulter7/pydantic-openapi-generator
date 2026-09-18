@@ -737,6 +737,10 @@ def _variant_deserialization_key(variant: ResponseVariant) -> tuple:
     )
 
 
+def _requires_response_dispatch(variants: List[ResponseVariant]) -> bool:
+    return len({_variant_deserialization_key(variant) for variant in variants}) > 1
+
+
 def _unambiguous_content_handlers(
     variants: List[ResponseVariant],
 ) -> List[ResponseContentHandler]:
@@ -773,9 +777,21 @@ def _response_status_handlers(
     for variant in variants:
         grouped.setdefault(variant.status_code, []).append(variant)
 
+    non_empty_keys = {
+        _variant_deserialization_key(variant)
+        for variant in variants
+        if variant.body_kind != "empty"
+    }
+    fallback_key = next(iter(non_empty_keys)) if len(non_empty_keys) == 1 else None
+
     return [
         ResponseStatusHandler(status_code=status_code, variants=status_variants)
         for status_code, status_variants in grouped.items()
+        if fallback_key is None
+        or any(
+            _variant_deserialization_key(variant) != fallback_key
+            for variant in status_variants
+        )
     ]
 
 
@@ -803,6 +819,7 @@ def generate_return_type(operation: Operation) -> OpReturnType:
         list_type=first_variant.list_type,
         variants=variants,
         status_handlers=_response_status_handlers(variants),
+        requires_response_dispatch=_requires_response_dispatch(variants),
         accept_content_types=list(dict.fromkeys(v.content_type for v in variants if v.content_type is not None)),
         unambiguous_content_handlers=_unambiguous_content_handlers(variants),
         return_type_hint=_return_type_hint(variants),

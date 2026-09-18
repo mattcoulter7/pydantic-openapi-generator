@@ -216,3 +216,4 @@ __marimo__/
 # Generated Files
 .DS_Store
 openapi.json
+/temp

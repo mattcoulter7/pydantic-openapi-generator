@@ -193,13 +193,13 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
 
         response.raise_for_status()
 
+{% if op.return_type.variants|length == 0 %}
+        return None
+{% elif not op.return_type.requires_response_dispatch %}
+{{ deserialize_response(op.return_type.variants[0], "        ") }}
+{% else %}
 {% set empty_variants = op.return_type.variants | selectattr("body_kind", "equalto", "empty") | list %}
 {% set non_empty_variants = op.return_type.variants | rejectattr("body_kind", "equalto", "empty") | list %}
-{% if empty_variants|length > 0 and non_empty_variants|length > 0 %}
-        if not response.content:
-            return None
-
-{% endif %}
 {% for handler in op.return_type.status_handlers %}
         if response.status_code == {{ handler.status_code }}:
 {% if handler.variants|length == 1 %}
@@ -252,6 +252,7 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
             f"Unexpected Content-Type {_response_content_type!r} "
             f"for response status {response.status_code}"
         )
+{% endif %}
 {% endif %}
 {% endif %}
 
