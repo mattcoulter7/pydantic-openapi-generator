@@ -13,6 +13,22 @@ from ..models import *
 
 {% set _base_url = servers[0].url if servers|length > 0 else "/" %}
 
+{% macro deserialize_response(item, indent) -%}
+{% if item.body_kind == "empty" -%}
+{{ indent }}return None
+{% elif item.body_kind == "binary" -%}
+{{ indent }}return response.content
+{% elif item.body_kind == "text" -%}
+{{ indent }}return response.text
+{% elif item.list_type -%}
+{{ indent }}return TypeAdapter(list[{{ item.list_type }}]).validate_python(response.json())
+{% elif item.type -%}
+{{ indent }}return TypeAdapter({{ item.type.converted_type }}).validate_python(response.json())
+{% else -%}
+{{ indent }}return response.json()
+{% endif -%}
+{% endmacro %}
+
 
 class SyncClient(BaseModel):
     model_config = {"validate_assignment": True, "arbitrary_types_allowed": True}
@@ -183,22 +199,31 @@ Generator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{% if o
             return None
 
 {% endif %}
-{% if op.return_type.unambiguous_content_handlers|length == 1 %}
-{% set handler = op.return_type.unambiguous_content_handlers[0] %}
-{% if handler.body_kind == "binary" %}
-        return response.content
-{% elif handler.body_kind == "text" %}
-        return response.text
-{% elif handler.type is not none and handler.type.converted_type is not none %}
-{% if handler.list_type is none %}
-        return TypeAdapter({{ handler.type.converted_type }}).validate_python(response.json())
+{% for handler in op.return_type.status_handlers %}
+        if response.status_code == {{ handler.status_code }}:
+{% if handler.variants|length == 1 %}
+{{ deserialize_response(handler.variants[0], "            ") }}
 {% else %}
-        return TypeAdapter(list[{{ handler.list_type }}]).validate_python(response.json())
+            _response_content_type = (
+                response.headers.get("content-type", "")
+                .split(";", 1)[0]
+                .strip()
+                .lower()
+            )
+{% for variant in handler.variants %}
+{% if variant.content_type %}
+            if _response_content_type == "{{ variant.content_type.lower() }}":
+{{ deserialize_response(variant, "                ") }}
+
 {% endif %}
-{% else %}
-        return response.json()
+{% endfor %}
+            raise ValueError(
+                f"Unexpected Content-Type {_response_content_type!r} "
+                "for response status {{ handler.status_code }}"
+            )
+
 {% endif %}
-{% else %}
+{% endfor %}
 {% set json_variants = non_empty_variants | selectattr("body_kind", "equalto", "json") | list %}
 {% set binary_variants = non_empty_variants | selectattr("body_kind", "equalto", "binary") | list %}
 {% set text_variants = non_empty_variants | selectattr("body_kind", "equalto", "text") | list %}
@@ -211,27 +236,21 @@ Generator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{% if o
 {% elif text_variants|length == non_empty_variants|length %}
         return response.text
 {% else %}
-{% for variant in op.return_type.variants %}
-{% if variant.body_kind != "empty" %}
-        if response.status_code == {{ variant.status_code }}:
-{% if variant.body_kind == "binary" %}
-            return response.content
-{% elif variant.body_kind == "text" %}
-            return response.text
-{% elif variant.type is not none and variant.type.converted_type is not none %}
-{% if variant.list_type is none %}
-            return TypeAdapter({{ variant.type.converted_type }}).validate_python(response.json())
-{% else %}
-            return TypeAdapter(list[{{ variant.list_type }}]).validate_python(response.json())
-{% endif %}
-{% else %}
-            return response.json()
-{% endif %}
+        _response_content_type = (
+            response.headers.get("content-type", "")
+            .split(";", 1)[0]
+            .strip()
+            .lower()
+        )
+{% for handler in op.return_type.unambiguous_content_handlers %}
+        if _response_content_type == "{{ handler.content_type }}":
+{{ deserialize_response(handler, "            ") }}
 
-{% endif %}
 {% endfor %}
-        return TypeAdapter({{ op.return_type.return_type_hint | replace(" | None", "") | replace("None | ", "") }}).validate_python(response.json())
-{% endif %}
+        raise ValueError(
+            f"Unexpected Content-Type {_response_content_type!r} "
+            f"for response status {response.status_code}"
+        )
 {% endif %}
 {% endif %}
 

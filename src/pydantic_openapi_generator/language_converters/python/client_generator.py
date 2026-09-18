@@ -61,6 +61,7 @@ from pydantic_openapi_generator.models import (
     OpReturnType,
     RequestBodyDefinition,
     ResponseContentHandler,
+    ResponseStatusHandler,
     ResponseVariant,
     ServiceOperation,
     TypeConversion,
@@ -765,6 +766,19 @@ def _unambiguous_content_handlers(
     return handlers
 
 
+def _response_status_handlers(
+    variants: List[ResponseVariant],
+) -> List[ResponseStatusHandler]:
+    grouped: Dict[int, List[ResponseVariant]] = {}
+    for variant in variants:
+        grouped.setdefault(variant.status_code, []).append(variant)
+
+    return [
+        ResponseStatusHandler(status_code=status_code, variants=status_variants)
+        for status_code, status_variants in grouped.items()
+    ]
+
+
 def generate_return_type(operation: Operation) -> OpReturnType:
     if operation.responses is None:
         return OpReturnType(type=None, status_code=200, complex_type=False)
@@ -788,6 +802,7 @@ def generate_return_type(operation: Operation) -> OpReturnType:
         complex_type=first_variant.complex_type,
         list_type=first_variant.list_type,
         variants=variants,
+        status_handlers=_response_status_handlers(variants),
         accept_content_types=list(dict.fromkeys(v.content_type for v in variants if v.content_type is not None)),
         unambiguous_content_handlers=_unambiguous_content_handlers(variants),
         return_type_hint=_return_type_hint(variants),

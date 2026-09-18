@@ -23,6 +23,8 @@ from .parsers import (
 )
 from .version_detector import detect_openapi_version
 
+DELETE_MARKER = "x-pydantic-openapi-generator-delete"
+
 
 def write_code(path: Path, content: str, formatter: Formatter) -> None:
     """
@@ -81,9 +83,14 @@ def load_openapi_data(source: Union[str, Path]) -> dict[str, Any]:
 def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     """
     Recursively merge two dictionaries. Overlay lists and scalar values replace base values.
+    A value of {"x-pydantic-openapi-generator-delete": true} removes the key.
     """
     result = base.copy()
     for key, overlay_value in overlay.items():
+        if overlay_value == {DELETE_MARKER: True}:
+            result.pop(key, None)
+            continue
+
         base_value = result.get(key)
         if isinstance(base_value, dict) and isinstance(overlay_value, dict):
             result[key] = deep_merge(base_value, overlay_value)
