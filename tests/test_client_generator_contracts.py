@@ -119,6 +119,7 @@ CONTRACT_SPEC = {
         "/download": {
             "get": {
                 "operationId": "downloadDocument",
+                "x-pydantic-openapi-generator-accept": "application/json",
                 "responses": {
                     "200": {
                         "description": "PDF",
@@ -332,7 +333,7 @@ def test_generated_clients_honor_openapi_request_response_contracts(
     assert b"hello" in upload_request.content
 
     download_request = requests[2]
-    assert download_request.headers["accept"] == "application/pdf"
+    assert download_request.headers["accept"] == "application/json"
 
 
 @pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)

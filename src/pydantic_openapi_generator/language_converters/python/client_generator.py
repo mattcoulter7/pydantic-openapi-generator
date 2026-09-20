@@ -76,6 +76,8 @@ RESERVED_CLIENT_MEMBER_NAMES = {
     "model_config",
 }
 
+ACCEPT_HEADER_EXTENSION = "x-pydantic-openapi-generator-accept"
+
 
 # Helper functions for isinstance checks across OpenAPI versions
 def is_response_type(obj) -> bool:
@@ -741,6 +743,18 @@ def _requires_response_dispatch(variants: List[ResponseVariant]) -> bool:
     return len({_variant_deserialization_key(variant) for variant in variants}) > 1
 
 
+def _accept_content_types(operation: Operation, variants: List[ResponseVariant]) -> List[str]:
+    model_extra = getattr(operation, "model_extra", None) or {}
+    override = model_extra.get(ACCEPT_HEADER_EXTENSION)
+    if override is None:
+        return list(dict.fromkeys(v.content_type for v in variants if v.content_type is not None))
+    if isinstance(override, str) and override:
+        return [override]
+    if isinstance(override, list) and override and all(isinstance(value, str) and value for value in override):
+        return list(dict.fromkeys(override))
+    raise ValueError(f"{ACCEPT_HEADER_EXTENSION} must be a non-empty string or list of strings")
+
+
 def _unambiguous_content_handlers(
     variants: List[ResponseVariant],
 ) -> List[ResponseContentHandler]:
@@ -813,7 +827,7 @@ def generate_return_type(operation: Operation) -> OpReturnType:
         variants=variants,
         status_handlers=_response_status_handlers(variants),
         requires_response_dispatch=_requires_response_dispatch(variants),
-        accept_content_types=list(dict.fromkeys(v.content_type for v in variants if v.content_type is not None)),
+        accept_content_types=_accept_content_types(operation, variants),
         unambiguous_content_handlers=_unambiguous_content_handlers(variants),
         return_type_hint=_return_type_hint(variants),
     )
