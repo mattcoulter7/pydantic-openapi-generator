@@ -23,6 +23,7 @@ from openapi_pydantic.v3.v3_0 import (
 from openapi_pydantic.v3.v3_0 import (
     Schema as Schema30,
 )
+from openapi_pydantic.v3.v3_0.datatype import DataType as DataType30
 from openapi_pydantic.v3.v3_0.parameter import Parameter as Parameter30
 from openapi_pydantic.v3.v3_1 import (
     MediaType as MediaType31,
@@ -36,6 +37,7 @@ from openapi_pydantic.v3.v3_1 import (
 from openapi_pydantic.v3.v3_1 import (
     Schema as Schema31,
 )
+from openapi_pydantic.v3.v3_1.datatype import DataType as DataType31
 from openapi_pydantic.v3.v3_1.parameter import Parameter as Parameter31
 
 from pydantic_openapi_generator.common import PydanticVersion
@@ -77,6 +79,7 @@ RESERVED_CLIENT_MEMBER_NAMES = {
 }
 
 ACCEPT_HEADER_EXTENSION = "x-pydantic-openapi-generator-accept"
+MediaTypeSchema = Union[Schema30, Reference30, Schema31, Reference31]
 
 
 # Helper functions for isinstance checks across OpenAPI versions
@@ -588,23 +591,33 @@ def generate_operation_parameters(
     return parameters
 
 
-def _is_binary_schema(schema: Any) -> bool:
-    schema_format = getattr(schema, "schema_format", None)
-    schema_type = getattr(schema, "type", None)
-    return (schema_type == "string" or str(schema_type) == "DataType.STRING") and schema_format == "binary"
+def _is_binary_schema(schema: Optional[MediaTypeSchema]) -> bool:
+    if not isinstance(schema, (Schema30, Schema31)):
+        return False
+
+    schema_types = schema.type if isinstance(schema.type, list) else [schema.type]
+    is_string = DataType30.STRING in schema_types or DataType31.STRING in schema_types
+    return is_string and schema.schema_format == "binary"
 
 
 def _body_kind_for_content(
-    content_type: Optional[str], schema: Any = None
+    content_type: Optional[str], schema: Optional[MediaTypeSchema] = None
 ) -> Literal["empty", "json", "text", "binary"]:
     if content_type is None:
         return "empty"
-    lowered = content_type.lower()
-    if lowered == "application/json" or lowered.endswith("+json"):
-        return "json"
-    if lowered == "application/pdf" or lowered == "application/octet-stream" or _is_binary_schema(schema):
+
+    media_type = content_type.partition(";")[0].strip().lower()
+    if _is_binary_schema(schema):
         return "binary"
-    if lowered.startswith("text/"):
+    if media_type == "application/json" or media_type.endswith("+json"):
+        return "json"
+    if media_type.startswith("text/"):
+        return "text"
+    if (
+        media_type in {"application/xml", "application/yaml"}
+        or media_type.endswith("+xml")
+        or media_type.endswith("+yaml")
+    ):
         return "text"
     return "binary"
 
@@ -612,7 +625,7 @@ def _body_kind_for_content(
 def _response_variant_from_schema(
     status_code: int,
     content_type: Optional[str],
-    inner_schema: Any,
+    inner_schema: Optional[MediaTypeSchema],
 ) -> ResponseVariant:
     body_kind = _body_kind_for_content(content_type, inner_schema)
     if body_kind == "empty":
