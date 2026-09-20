@@ -11,10 +11,15 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from openapi_pydantic.v3.v3_0 import Schema as Schema30
+from openapi_pydantic.v3.v3_1 import Schema as Schema31
 from pydantic import ValidationError
 
 from pydantic_openapi_generator.common import HTTPLibrary
 from pydantic_openapi_generator.generate_data import generate_data
+from pydantic_openapi_generator.language_converters.python.client_generator import (
+    _body_kind_for_content,
+)
 
 CONTRACT_SPEC = {
     "openapi": "3.0.3",
@@ -53,20 +58,12 @@ CONTRACT_SPEC = {
                 "responses": {
                     "200": {
                         "description": "Thing",
-                        "content": {
-                            "application/json": {
-                                "schema": {"$ref": "#/components/schemas/ThingResponse"}
-                            }
-                        },
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ThingResponse"}}},
                     },
                     "206": {
                         "description": "Validation",
                         "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ValidationResponse"
-                                }
-                            }
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ValidationResponse"}}
                         },
                     },
                 },
@@ -95,23 +92,11 @@ CONTRACT_SPEC = {
                 "responses": {
                     "200": {
                         "description": "Uploaded",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/UploadResponse"
-                                }
-                            }
-                        },
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UploadResponse"}}},
                     },
                     "202": {
                         "description": "Accepted",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/UploadResponse"
-                                }
-                            }
-                        },
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UploadResponse"}}},
                     },
                 },
             }
@@ -119,14 +104,11 @@ CONTRACT_SPEC = {
         "/download": {
             "get": {
                 "operationId": "downloadDocument",
+                "x-pydantic-openapi-generator-accept": "application/json",
                 "responses": {
                     "200": {
                         "description": "PDF",
-                        "content": {
-                            "application/pdf": {
-                                "schema": {"type": "string", "format": "binary"}
-                            }
-                        },
+                        "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}},
                     }
                 },
             }
@@ -139,9 +121,7 @@ CONTRACT_SPEC = {
                         "description": "Document",
                         "content": {
                             "application/json": {"schema": {"type": "string"}},
-                            "application/pdf": {
-                                "schema": {"type": "string", "format": "binary"}
-                            },
+                            "application/pdf": {"schema": {"type": "string", "format": "binary"}},
                         },
                     }
                 },
@@ -160,9 +140,7 @@ CONTRACT_SPEC = {
                     "200": {"description": "No result", "content": {}},
                     "202": {
                         "description": "Accepted",
-                        "content": {
-                            "application/json": {"schema": {"type": "string"}}
-                        },
+                        "content": {"application/json": {"schema": {"type": "string"}}},
                     },
                 },
             }
@@ -180,9 +158,7 @@ CONTRACT_SPEC = {
                                     "required": ["data"],
                                     "properties": {
                                         "event": {"type": "string"},
-                                        "data": {
-                                            "$ref": "#/components/schemas/EventPayload"
-                                        },
+                                        "data": {"$ref": "#/components/schemas/EventPayload"},
                                         "id": {"type": "string"},
                                     },
                                 }
@@ -223,6 +199,36 @@ CONTRACT_SPEC = {
 }
 
 
+@pytest.mark.parametrize(
+    ("content_type", "schema", "expected"),
+    [
+        (None, None, "empty"),
+        ("application/json; charset=utf-8", None, "json"),
+        ("application/problem+json", None, "json"),
+        ("text/plain; charset=utf-8", None, "text"),
+        ("application/xml", None, "text"),
+        ("application/problem+xml", None, "text"),
+        ("application/yaml", None, "text"),
+        ("application/vnd.example+yaml", None, "text"),
+        ("application/pdf", None, "binary"),
+        ("image/webp", None, "binary"),
+        ("application/vnd.example.document", None, "binary"),
+        (
+            "application/json",
+            Schema30(type="string", format="binary"),
+            "binary",
+        ),
+        (
+            "application/vnd.example.document",
+            Schema31(type=["string", "null"], format="binary"),
+            "binary",
+        ),
+    ],
+)
+def test_body_kind_classification(content_type, schema, expected):
+    assert _body_kind_for_content(content_type, schema) == expected
+
+
 @pytest.fixture
 def generated_contract_package():
     yield from _generated_package()
@@ -254,9 +260,7 @@ def _generated_package(config_content: str | None = None):
         spec_path.unlink(missing_ok=True)
         config_path.unlink(missing_ok=True)
         for module_name in list(sys.modules):
-            if module_name == package_name or module_name.startswith(
-                f"{package_name}."
-            ):
+            if module_name == package_name or module_name.startswith(f"{package_name}."):
                 sys.modules.pop(module_name, None)
 
 
@@ -293,20 +297,14 @@ def test_generated_clients_honor_openapi_request_response_contracts(
     models = importlib.import_module(f"{generated_contract_package}.models")
 
     if async_client:
-        client_module = importlib.import_module(
-            f"{generated_contract_package}.clients.async_client"
-        )
+        client_module = importlib.import_module(f"{generated_contract_package}.clients.async_client")
         client = client_module.AsyncClient(timeout=1.23)
         thing, upload, download, empty = asyncio.run(_run_async_contract(client))
     else:
-        client_module = importlib.import_module(
-            f"{generated_contract_package}.clients.sync_client"
-        )
+        client_module = importlib.import_module(f"{generated_contract_package}.clients.sync_client")
         client = client_module.SyncClient(timeout=1.23)
         thing = client.getThing(X_Test_Header="required")
-        upload = client.uploadDocument(
-            data={"file": ("doc.txt", b"hello", "text/plain")}
-        )
+        upload = client.uploadDocument(data={"file": ("doc.txt", b"hello", "text/plain")})
         download = client.downloadDocument()
         empty = client.deleteThing()
 
@@ -332,7 +330,7 @@ def test_generated_clients_honor_openapi_request_response_contracts(
     assert b"hello" in upload_request.content
 
     download_request = requests[2]
-    assert download_request.headers["accept"] == "application/pdf"
+    assert download_request.headers["accept"] == "application/json"
 
 
 @pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
@@ -342,29 +340,19 @@ def test_generated_clients_validate_undocumented_successes_against_contract(
     respx_mock,
     async_client,
 ):
-    respx_mock.get("http://testserver/things").mock(
-        return_value=httpx.Response(201, json={"unexpected": True})
-    )
-    respx_mock.post("http://testserver/upload").mock(
-        return_value=httpx.Response(201, json={"documentId": "doc-201"})
-    )
+    respx_mock.get("http://testserver/things").mock(return_value=httpx.Response(201, json={"unexpected": True}))
+    respx_mock.post("http://testserver/upload").mock(return_value=httpx.Response(201, json={"documentId": "doc-201"}))
 
     if async_client:
-        client_module = importlib.import_module(
-            f"{generated_contract_package}.clients.async_client"
-        )
+        client_module = importlib.import_module(f"{generated_contract_package}.clients.async_client")
         client = client_module.AsyncClient()
         upload = asyncio.run(_run_async_undocumented_successes(client))
         with pytest.raises(ValidationError):
             asyncio.run(client.getThing(X_Test_Header="required"))
     else:
-        client_module = importlib.import_module(
-            f"{generated_contract_package}.clients.sync_client"
-        )
+        client_module = importlib.import_module(f"{generated_contract_package}.clients.sync_client")
         client = client_module.SyncClient()
-        upload = client.uploadDocument(
-            data={"file": ("doc.txt", b"hello", "text/plain")}
-        )
+        upload = client.uploadDocument(data={"file": ("doc.txt", b"hello", "text/plain")})
         with pytest.raises(ValidationError):
             client.getThing(X_Test_Header="required")
 
@@ -394,15 +382,11 @@ def test_generated_clients_dispatch_same_status_by_content_type(
     )
 
     if async_client:
-        client_module = importlib.import_module(
-            f"{generated_contract_package}.clients.async_client"
-        )
+        client_module = importlib.import_module(f"{generated_contract_package}.clients.async_client")
         client = client_module.AsyncClient()
         json_result, pdf_result = asyncio.run(_run_async_multi_download(client))
     else:
-        client_module = importlib.import_module(
-            f"{generated_contract_package}.clients.sync_client"
-        )
+        client_module = importlib.import_module(f"{generated_contract_package}.clients.sync_client")
         client = client_module.SyncClient()
         json_result = client.multiDownload()
         pdf_result = client.multiDownload()
@@ -418,16 +402,11 @@ def test_generated_clients_do_not_treat_empty_json_body_as_empty_variant(
     respx_mock,
     async_client,
 ):
-    respx_mock.post("http://testserver/accepted").mock(
-        return_value=httpx.Response(202, content=b"")
-    )
+    respx_mock.post("http://testserver/accepted").mock(return_value=httpx.Response(202, content=b""))
     client_module = importlib.import_module(
-        f"{generated_contract_package}.clients."
-        f"{'async_client' if async_client else 'sync_client'}"
+        f"{generated_contract_package}.clients.{'async_client' if async_client else 'sync_client'}"
     )
-    client_class = (
-        client_module.AsyncClient if async_client else client_module.SyncClient
-    )
+    client_class = client_module.AsyncClient if async_client else client_module.SyncClient
     client = client_class()
 
     with pytest.raises(json.JSONDecodeError):
@@ -442,13 +421,9 @@ def test_generated_clients_only_dispatch_for_distinct_response_behaviors(
     generated_contract_package,
     module_name,
 ):
-    client_module = importlib.import_module(
-        f"{generated_contract_package}.clients.{module_name}"
-    )
+    client_module = importlib.import_module(f"{generated_contract_package}.clients.{module_name}")
 
-    client_class = getattr(client_module, "SyncClient", None) or getattr(
-        client_module, "AsyncClient"
-    )
+    client_class = getattr(client_module, "SyncClient", None) or getattr(client_module, "AsyncClient")
     upload_method = inspect.getsource(client_class.uploadDocument)
     download_method = inspect.getsource(client_class.downloadDocument)
     multi_download_method = inspect.getsource(client_class.multiDownload)
@@ -545,9 +520,7 @@ def test_generated_clients_resolve_configured_parameter_sources(
     respx_mock.get("http://testserver/things").mock(side_effect=thing_handler)
 
     if async_client:
-        client_module = importlib.import_module(
-            f"{generated_configured_contract_package}.clients.async_client"
-        )
+        client_module = importlib.import_module(f"{generated_configured_contract_package}.clients.async_client")
 
         class Client(client_module.AsyncClient):
             getter_calls: int = 0
@@ -567,9 +540,7 @@ def test_generated_clients_resolve_configured_parameter_sources(
         asyncio.run(_run_async_configured_contract(client))
         assert client.getter_calls == 1
     else:
-        client_module = importlib.import_module(
-            f"{generated_configured_contract_package}.clients.sync_client"
-        )
+        client_module = importlib.import_module(f"{generated_configured_contract_package}.clients.sync_client")
 
         class Client(client_module.SyncClient):
             getter_calls: int = 0
@@ -640,9 +611,7 @@ def test_generated_clients_pass_custom_kwargs_to_request_context_only(
     respx_mock.get("http://testserver/things").mock(side_effect=thing_handler)
 
     if async_client:
-        client_module = importlib.import_module(
-            f"{generated_custom_kwargs_contract_package}.clients.async_client"
-        )
+        client_module = importlib.import_module(f"{generated_custom_kwargs_contract_package}.clients.async_client")
 
         class Client(client_module.AsyncClient):
             getter_kwargs: dict[str, Any] = {}
@@ -659,9 +628,7 @@ def test_generated_clients_pass_custom_kwargs_to_request_context_only(
         client = Client(test_header="from-client")
         asyncio.run(client.getThing(claimIdentifier="CLM-123", product_brand="CGU", someContext=42))
     else:
-        client_module = importlib.import_module(
-            f"{generated_custom_kwargs_contract_package}.clients.sync_client"
-        )
+        client_module = importlib.import_module(f"{generated_custom_kwargs_contract_package}.clients.sync_client")
 
         class Client(client_module.SyncClient):
             getter_kwargs: dict[str, Any] = {}
@@ -724,33 +691,21 @@ def test_generated_sse_data_payloads_use_declared_schema(
         requests.append(request)
         return httpx.Response(
             200,
-            content=(
-                b"event: update\n"
-                b'data: {"message": "ok", "timestamp": "2026-08-14T00:00:00Z", "value": 42.5}\n'
-                b"\n"
-            ),
+            content=(b'event: update\ndata: {"message": "ok", "timestamp": "2026-08-14T00:00:00Z", "value": 42.5}\n\n'),
             headers={"content-type": "text/event-stream"},
         )
 
-    respx_mock.get("http://testserver/events").mock(
-        side_effect=events_handler
-    )
+    respx_mock.get("http://testserver/events").mock(side_effect=events_handler)
     models = importlib.import_module(f"{generated_contract_package}.models")
 
     if async_client:
-        client_module = importlib.import_module(
-            f"{generated_contract_package}.clients.async_client"
-        )
+        client_module = importlib.import_module(f"{generated_contract_package}.clients.async_client")
         client = client_module.AsyncClient(timeout=2.34)
         first_data_item = asyncio.run(_first_async_sse_data_item(client))
     else:
-        client_module = importlib.import_module(
-            f"{generated_contract_package}.clients.sync_client"
-        )
+        client_module = importlib.import_module(f"{generated_contract_package}.clients.sync_client")
         client = client_module.SyncClient(timeout=2.34)
-        first_data_item = next(
-            item for item in client.getEvents() if not isinstance(item, str)
-        )
+        first_data_item = next(item for item in client.getEvents() if not isinstance(item, str))
 
     assert isinstance(first_data_item, models.EventPayload)
     assert first_data_item.message == "ok"
@@ -781,9 +736,7 @@ async def _first_async_sse_data_item(client):
 
 
 async def _run_async_undocumented_successes(client):
-    upload = await client.uploadDocument(
-        data={"file": ("doc.txt", b"hello", "text/plain")}
-    )
+    upload = await client.uploadDocument(data={"file": ("doc.txt", b"hello", "text/plain")})
     return upload
 
 
@@ -867,9 +820,7 @@ custom_kwargs:
 
 async def _run_async_contract(client):
     thing = await client.getThing(X_Test_Header="required")
-    upload = await client.uploadDocument(
-        data={"file": ("doc.txt", b"hello", "text/plain")}
-    )
+    upload = await client.uploadDocument(data={"file": ("doc.txt", b"hello", "text/plain")})
     download = await client.downloadDocument()
     empty = await client.deleteThing()
     return thing, upload, download, empty
