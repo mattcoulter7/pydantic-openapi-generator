@@ -69,6 +69,31 @@ CONTRACT_SPEC = {
                 },
             }
         },
+        "/resources/{resourceId}": {
+            "get": {
+                "operationId": "getResource",
+                "parameters": [
+                    {
+                        "name": "resourceId",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    },
+                    {
+                        "name": "X-Function-Header",
+                        "in": "header",
+                        "required": False,
+                        "schema": {"type": "string"},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Resource",
+                        "content": {"application/json": {"schema": {"type": "string"}}},
+                    }
+                },
+            }
+        },
         "/upload": {
             "post": {
                 "operationId": "uploadDocument",
@@ -567,12 +592,14 @@ def test_generated_clients_resolve_configured_parameter_sources(
         assert client.getter_calls == 1
 
     assert client.getter_kwargs == {
+        "endpoint": "/things",
         "product_brand": "CGU",
         "test_header": None,
         "optional_header": None,
         "dynamic_header": None,
     }
     assert client.token_kwargs == {
+        "endpoint": "/things",
         "product_brand": "AMI",
         "test_header": "from-override",
         "optional_header": "optional-override",
@@ -593,6 +620,58 @@ def test_generated_clients_resolve_configured_parameter_sources(
 
     assert "**********" not in first_request.headers["X-Test-Header"]
     assert "**********" not in second_request.headers["X-Test-Header"]
+
+
+@pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
+@pytest.mark.parametrize("async_client", [False, True])
+def test_generated_clients_pass_endpoint_template_to_function_parameters(
+    generated_configured_contract_package,
+    respx_mock,
+    async_client,
+):
+    requests: list[httpx.Request] = []
+
+    def resource_handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json="ok")
+
+    respx_mock.get("http://testserver/resources/123").mock(side_effect=resource_handler)
+
+    if async_client:
+        client_module = importlib.import_module(f"{generated_configured_contract_package}.clients.async_client")
+
+        class Client(client_module.AsyncClient):
+            getter_kwargs: dict[str, Any] = {}
+
+            async def get_dynamic_header(self, endpoint: str, **kwargs: Any) -> str:
+                self.getter_kwargs = {"endpoint": endpoint, **kwargs}
+                return endpoint
+
+        client = Client(test_header="from-client")
+        asyncio.run(client.getResource(resourceId="123"))
+        asyncio.run(client.getResource(resourceId="123", dynamic_header="explicit"))
+    else:
+        client_module = importlib.import_module(f"{generated_configured_contract_package}.clients.sync_client")
+
+        class Client(client_module.SyncClient):
+            getter_kwargs: dict[str, Any] = {}
+
+            def get_dynamic_header(self, endpoint: str, **kwargs: Any) -> str:
+                self.getter_kwargs = {"endpoint": endpoint, **kwargs}
+                return endpoint
+
+        client = Client(test_header="from-client")
+        client.getResource(resourceId="123")
+        client.getResource(resourceId="123", dynamic_header="explicit")
+
+    assert client.getter_kwargs == {
+        "endpoint": "/resources/{resourceId}",
+        "resourceId": "123",
+        "dynamic_header": None,
+    }
+
+    assert requests[0].headers["X-Function-Header"] == "/resources/{resourceId}"
+    assert requests[1].headers["X-Function-Header"] == "explicit"
 
 
 @pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
@@ -656,6 +735,7 @@ def test_generated_clients_pass_custom_kwargs_to_request_context_only(
     assert "someContext" in delete_signature.parameters
 
     assert client.getter_kwargs == {
+        "endpoint": "/things",
         "claimIdentifier": "CLM-123",
         "X_Optional_Header": "AU",
         "test_header": None,
