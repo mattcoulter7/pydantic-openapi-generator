@@ -76,6 +76,7 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
 {%- endif -%}:
         base_url = self.base_url
         _request_kwargs = {
+            "endpoint": {{ op.path_name | python_repr }},
 {% for kwarg in op.call_kwargs %}
             "{{ kwarg }}": {{ kwarg }},
 {% endfor %}

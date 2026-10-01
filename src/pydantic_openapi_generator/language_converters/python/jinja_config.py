@@ -34,5 +34,6 @@ def create_jinja_env():
     )
 
     environment.filters["normalize_symbol"] = common.normalize_symbol
+    environment.filters["python_repr"] = repr
 
     return environment
