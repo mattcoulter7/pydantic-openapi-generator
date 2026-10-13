@@ -73,6 +73,26 @@ $ pip install pydantic-openapi-generator
 
 Please see the [Quick start page] for details.
 
+### HTTP client configuration
+
+Generated `httpx` clients default to a 30 second timeout. You can override that
+and enable an `httpx-retries` policy from the generator configuration file:
+
+```yaml
+default_timeout: 30.0
+retry:
+  total: 3
+  backoff_factor: 0.5
+  status_forcelist:
+    - 429
+    - 502
+    - 503
+    - 504
+```
+
+When `retry` is configured, the generated client project must include
+`httpx-retries`.
+
 ## Roadmap
 
 - Support for all commonly used http libraries in the python ecosystem (~~requests~~, urllib, ...)

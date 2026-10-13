@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from uuid import uuid4
 
@@ -356,6 +357,88 @@ def test_generated_clients_honor_openapi_request_response_contracts(
 
     download_request = requests[2]
     assert download_request.headers["accept"] == "application/json"
+
+
+@pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
+@pytest.mark.parametrize("async_client", [False, True])
+def test_generated_clients_use_configured_default_timeout(
+    respx_mock,
+    async_client,
+):
+    requests: list[httpx.Request] = []
+
+    def thing_handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(206, json={"message": "partial"})
+
+    respx_mock.get("http://testserver/things").mock(side_effect=thing_handler)
+
+    config_content = "default_timeout: 12.5\n"
+    for package_name in _generated_package(config_content):
+        if async_client:
+            client_module = importlib.import_module(f"{package_name}.clients.async_client")
+            client = client_module.AsyncClient()
+            asyncio.run(client.getThing(X_Test_Header="required"))
+        else:
+            client_module = importlib.import_module(f"{package_name}.clients.sync_client")
+            client = client_module.SyncClient()
+            client.getThing(X_Test_Header="required")
+
+    assert requests[0].extensions["timeout"] == {
+        "connect": 12.5,
+        "read": 12.5,
+        "write": 12.5,
+        "pool": 12.5,
+    }
+
+
+def test_generated_clients_build_configured_retry_policy(monkeypatch):
+    retry_instances: list[Any] = []
+    transport_instances: list[Any] = []
+    fake_httpx_retries = ModuleType("httpx_retries")
+
+    class Retry:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            retry_instances.append(self)
+
+    class RetryTransport(httpx.MockTransport):
+        def __init__(self, retry: Any = None) -> None:
+            self.retry = retry
+            transport_instances.append(self)
+            super().__init__(lambda request: httpx.Response(206, json={"message": "partial"}))
+
+    fake_httpx_retries.Retry = Retry
+    fake_httpx_retries.RetryTransport = RetryTransport
+    monkeypatch.setitem(sys.modules, "httpx_retries", fake_httpx_retries)
+
+    config_content = """
+retry:
+  total: 4
+  backoff_factor: 0.25
+  status_forcelist:
+    - 429
+    - 503
+  allowed_methods:
+    - GET
+    - POST
+"""
+    for package_name in _generated_package(config_content):
+        client_module = importlib.import_module(f"{package_name}.clients.sync_client")
+        client = client_module.SyncClient()
+        result = client.getThing(X_Test_Header="required")
+
+    assert result.message == "partial"
+    assert retry_instances[0].kwargs == {
+        "total": 4,
+        "allowed_methods": ["GET", "POST"],
+        "status_forcelist": [429, 503],
+        "backoff_factor": 0.25,
+        "respect_retry_after_header": True,
+        "max_backoff_wait": 120.0,
+        "backoff_jitter": 1.0,
+    }
+    assert transport_instances[0].retry is retry_instances[0]
 
 
 @pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)

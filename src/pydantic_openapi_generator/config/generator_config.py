@@ -6,11 +6,25 @@ from pydantic_openapi_generator.config.kwarg_parameter import KwargArgumentConfi
 from pydantic_openapi_generator.config.parameter_union import ArgumentConfiguration
 
 
+class RetryConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total: int = 3
+    allowed_methods: list[str] | None = None
+    status_forcelist: list[int] | None = None
+    backoff_factor: float = 0.5
+    respect_retry_after_header: bool = True
+    max_backoff_wait: float = 120.0
+    backoff_jitter: float = 1.0
+
+
 class PydanticOpenAPIGeneratorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     parameters: list[ArgumentConfiguration] = Field(default_factory=list)
     custom_kwargs: list[CustomKwargConfiguration] = Field(default_factory=list)
+    default_timeout: float = 30.0
+    retry: RetryConfiguration | None = None
 
     def parameter_configuration_for(self, parameter_name: str) -> BaseArgumentConfiguration:
         configured = self.parameters_by_name().get(parameter_name)

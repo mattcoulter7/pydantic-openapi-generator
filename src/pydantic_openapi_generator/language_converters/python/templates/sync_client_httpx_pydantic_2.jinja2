@@ -8,10 +8,17 @@ import json
 
 import httpx
 from pydantic import BaseModel, Field, SecretStr, TypeAdapter
+try:
+    from httpx_retries import Retry, RetryTransport
+except ImportError:
+    Retry = Any  # type: ignore[misc, assignment]
+    RetryTransport = None  # type: ignore[assignment]
 
 from ..models import *
 
 {% set _base_url = servers[0].url if servers|length > 0 else "/" %}
+_DEFAULT_TIMEOUT = {{ default_timeout | python_repr }}
+_DEFAULT_RETRY = {{ default_retry | python_repr }}
 
 {% macro deserialize_response(item, indent) -%}
 {% if item.body_kind == "empty" -%}
@@ -30,12 +37,21 @@ from ..models import *
 {% endmacro %}
 
 
+def _default_retry() -> Optional[Retry]:
+    if _DEFAULT_RETRY is None:
+        return None
+    if RetryTransport is None:
+        raise ImportError("httpx-retries is required when retry configuration is enabled")
+    return Retry(**_DEFAULT_RETRY)
+
+
 class SyncClient(BaseModel):
     model_config = {"validate_assignment": True, "arbitrary_types_allowed": True}
 
     base_url: str = "{{ _base_url }}"
     verify: Union[bool, str] = True
-    timeout: Union[float, httpx.Timeout, None] = Field(default_factory=lambda: httpx.Timeout(5.0))
+    timeout: Union[float, httpx.Timeout, None] = Field(default_factory=lambda: httpx.Timeout(_DEFAULT_TIMEOUT))
+    retry: Optional[Retry] = Field(default_factory=_default_retry)
 {% if env_token_name is none %}
     access_token: Optional[str] = None
 {% endif %}
@@ -68,6 +84,13 @@ class SyncClient(BaseModel):
         raise NotImplementedError
 
 {% endfor %}
+    def _retry_transport(self) -> Optional[httpx.BaseTransport]:
+        if self.retry is None:
+            return None
+        if RetryTransport is None:
+            raise ImportError("httpx-retries is required when retry configuration is enabled")
+        return RetryTransport(retry=self.retry)
+
 {% for op in operations %}
     def {{ op.operation_id }}(self{% if op.params %}, {{ op.params }}{% endif %}) -> {%- if op.is_sse -%}
 Generator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{% if op.sse_data_handler.list_type %}list[{{ op.sse_data_handler.list_type }}]{% else %}{{ op.sse_data_handler.type.converted_type }}{% endif %}{% else %}dict[str, Any]{% endif %}, None, None]
@@ -123,7 +146,12 @@ Generator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{% if o
         query_params = {k: v for (k, v) in query_params.items() if v is not None}
 
 {% if op.is_sse %}
-        with httpx.Client(base_url=base_url, verify=self.verify, timeout=self.timeout) as client:
+        with httpx.Client(
+            base_url=base_url,
+            verify=self.verify,
+            timeout=self.timeout,
+            transport=self._retry_transport(),
+        ) as client:
             with client.stream(
                 "{{ op.method }}",
                 httpx.URL(path),
@@ -170,7 +198,12 @@ Generator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{% if o
                     else:
                         yield line
 {% else %}
-        with httpx.Client(base_url=base_url, verify=self.verify, timeout=self.timeout) as client:
+        with httpx.Client(
+            base_url=base_url,
+            verify=self.verify,
+            timeout=self.timeout,
+            transport=self._retry_transport(),
+        ) as client:
             response = client.request(
                 "{{ op.method }}",
                 httpx.URL(path),

@@ -965,6 +965,10 @@ def generate_clients(
     sync_content = jinja_env.get_template(SYNC_CLIENT_HTTPX_TEMPLATE_PYDANTIC_V2).render(
         **openapi_dump,
         env_token_name=env_token_name,
+        default_timeout=generator_config.default_timeout,
+        default_retry=(
+            generator_config.retry.model_dump(exclude_none=True) if generator_config.retry is not None else None
+        ),
         operations=[so.model_dump() for so in sync_ops],
         client_fields=[p.model_dump() for p in client_fields],
         client_functions=[p.model_dump() for p in client_functions],
@@ -972,6 +976,10 @@ def generate_clients(
     async_content = jinja_env.get_template(ASYNC_CLIENT_HTTPX_TEMPLATE_PYDANTIC_V2).render(
         **openapi_dump,
         env_token_name=env_token_name,
+        default_timeout=generator_config.default_timeout,
+        default_retry=(
+            generator_config.retry.model_dump(exclude_none=True) if generator_config.retry is not None else None
+        ),
         operations=[so.model_dump() for so in async_ops],
         client_fields=[p.model_dump() for p in client_fields],
         client_functions=[p.model_dump() for p in client_functions],
