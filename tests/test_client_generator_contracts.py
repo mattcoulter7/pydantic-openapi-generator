@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from uuid import uuid4
 
@@ -16,6 +17,8 @@ from openapi_pydantic.v3.v3_1 import Schema as Schema31
 from pydantic import ValidationError
 
 from pydantic_openapi_generator.common import HTTPLibrary
+from pydantic_openapi_generator.config.generator_config import PydanticOpenAPIGeneratorConfig
+from pydantic_openapi_generator.config.retry import RetryFactory
 from pydantic_openapi_generator.generate_data import generate_data
 from pydantic_openapi_generator.language_converters.python.client_generator import (
     _body_kind_for_content,
@@ -356,6 +359,128 @@ def test_generated_clients_honor_openapi_request_response_contracts(
 
     download_request = requests[2]
     assert download_request.headers["accept"] == "application/json"
+
+
+@pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)
+@pytest.mark.parametrize("async_client", [False, True])
+def test_generated_clients_use_configured_default_timeout(
+    respx_mock,
+    async_client,
+):
+    requests: list[httpx.Request] = []
+
+    def thing_handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(206, json={"message": "partial"})
+
+    respx_mock.get("http://testserver/things").mock(side_effect=thing_handler)
+
+    config_content = "default_timeout: 12.5\n"
+    for package_name in _generated_package(config_content):
+        if async_client:
+            client_module = importlib.import_module(f"{package_name}.clients.async_client")
+            client = client_module.AsyncClient()
+            asyncio.run(client.getThing(X_Test_Header="required"))
+        else:
+            client_module = importlib.import_module(f"{package_name}.clients.sync_client")
+            client = client_module.SyncClient()
+            client.getThing(X_Test_Header="required")
+
+    assert requests[0].extensions["timeout"] == {
+        "connect": 12.5,
+        "read": 12.5,
+        "write": 12.5,
+        "pool": 12.5,
+    }
+
+
+@pytest.mark.parametrize("async_client", [False, True])
+def test_generated_clients_build_configured_retry_policy(monkeypatch, async_client):
+    retry_instances: list[Any] = []
+    transport_instances: list[Any] = []
+    fake_httpx_retries = ModuleType("httpx_retries")
+
+    class Retry:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            retry_instances.append(self)
+
+    class RetryTransport(httpx.MockTransport):
+        def __init__(self, retry: Any = None) -> None:
+            self.retry = retry
+            transport_instances.append(self)
+            super().__init__(lambda request: httpx.Response(206, json={"message": "partial"}))
+
+    fake_httpx_retries.Retry = Retry
+    fake_httpx_retries.RetryTransport = RetryTransport
+    monkeypatch.setitem(sys.modules, "httpx_retries", fake_httpx_retries)
+
+    config_content = """
+retry:
+  total: 4
+  backoff_factor: 0.25
+  status_forcelist:
+    - 429
+    - 503
+  allowed_methods:
+    - GET
+    - POST
+"""
+    for package_name in _generated_package(config_content):
+        retry_module = importlib.import_module(f"{package_name}.utils.retry")
+        client_module = importlib.import_module(
+            f"{package_name}.clients.{'async_client' if async_client else 'sync_client'}"
+        )
+        client_type = client_module.AsyncClient if async_client else client_module.SyncClient
+        client = client_type.model_validate_json("{}")
+        assert isinstance(client.retry, retry_module.RetryFactory)
+        assert retry_module.RetryFactory.model_json_schema() == RetryFactory.model_json_schema()
+        assert isinstance(PydanticOpenAPIGeneratorConfig(retry=client.retry.model_dump()).retry, RetryFactory)
+        client = client_type.model_validate_json(client.model_dump_json())
+        if async_client:
+            result = asyncio.run(client.getThing(X_Test_Header="required"))
+        else:
+            result = client.getThing(X_Test_Header="required")
+
+    assert result.message == "partial"
+    assert retry_instances[0].kwargs == {
+        "total": 4,
+        "allowed_methods": ["GET", "POST"],
+        "status_forcelist": [429, 503],
+        "backoff_factor": 0.25,
+        "respect_retry_after_header": True,
+        "max_backoff_wait": 120.0,
+        "backoff_jitter": 1.0,
+    }
+    assert transport_instances[0].retry is retry_instances[0]
+
+
+@pytest.mark.parametrize("async_client", [False, True])
+@pytest.mark.parametrize("config_content", [None, "retry:\n  total: 4\n"])
+def test_generated_clients_accept_retry_configuration_from_json(async_client, config_content):
+    for package_name in _generated_package(config_content):
+        client_module = importlib.import_module(
+            f"{package_name}.clients.{'async_client' if async_client else 'sync_client'}"
+        )
+        client_type = client_module.AsyncClient if async_client else client_module.SyncClient
+        client = client_type.model_validate_json(
+            '{"retry": {"total": 2, "backoff_factor": 0.25, "status_forcelist": [503]}}'
+        )
+        assert client.retry.total == 2
+        assert client.retry.backoff_factor == 0.25
+        assert client.retry.status_forcelist == [503]
+        restored = client_type.model_validate_json(client.model_dump_json())
+        assert restored.retry == client.retry
+        assert restored.timeout == 30.0
+        assert client_type.model_validate_json('{"retry": null}').retry is None
+        source = inspect.getsource(client_module)
+        assert "_DEFAULT_TIMEOUT" not in source
+        assert "_DEFAULT_RETRY" not in source
+        assert "_retry_transport" not in source
+        with pytest.raises(ValidationError):
+            client_type.model_validate_json('{"retry": {"total": -1}}')
+        with pytest.raises(ValidationError):
+            client_type.model_validate_json('{"retry": {"unknown_option": true}}')
 
 
 @pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)

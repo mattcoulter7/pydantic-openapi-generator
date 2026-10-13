@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel, Field, SecretStr, TypeAdapter
 
 from ..models import *
+from ..utils.retry import RetryFactory
 
 {% set _base_url = servers[0].url if servers|length > 0 else "/" %}
 
@@ -35,7 +36,12 @@ class AsyncClient(BaseModel):
 
     base_url: str = "{{ _base_url }}"
     verify: Union[bool, str] = True
-    timeout: Union[float, httpx.Timeout, None] = Field(default_factory=lambda: httpx.Timeout(5.0))
+    timeout: Union[float, httpx.Timeout, None] = {{ default_timeout | python_repr }}
+{% if default_retry is not none %}
+    retry: Optional[RetryFactory] = Field(default_factory=lambda: RetryFactory(**{{ default_retry | python_repr }}))
+{% else %}
+    retry: Optional[RetryFactory] = None
+{% endif %}
 {% if env_token_name is none %}
     access_token: Optional[str] = None
 {% endif %}
@@ -123,7 +129,12 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
         query_params = {k: v for (k, v) in query_params.items() if v is not None}
 
 {% if op.is_sse %}
-        async with httpx.AsyncClient(base_url=base_url, verify=self.verify, timeout=self.timeout) as client:
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            verify=self.verify,
+            timeout=self.timeout,
+            transport=self.retry.get_transport() if self.retry is not None else None,
+        ) as client:
             async with client.stream(
                 "{{ op.method }}",
                 httpx.URL(path),
@@ -171,7 +182,12 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
                         # Non-data lines: yield as raw text for debugging/visibility
                         yield line
 {% else %}
-        async with httpx.AsyncClient(base_url=base_url, verify=self.verify, timeout=self.timeout) as client:
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            verify=self.verify,
+            timeout=self.timeout,
+            transport=self.retry.get_transport() if self.retry is not None else None,
+        ) as client:
             response = await client.request(
                 "{{ op.method }}",
                 httpx.URL(path),

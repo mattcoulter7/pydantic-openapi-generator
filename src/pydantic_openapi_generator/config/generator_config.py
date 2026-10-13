@@ -4,6 +4,7 @@ from pydantic_openapi_generator.config.base_parameter import BaseArgumentConfigu
 from pydantic_openapi_generator.config.custom_kwarg import CustomKwargConfiguration
 from pydantic_openapi_generator.config.kwarg_parameter import KwargArgumentConfiguration
 from pydantic_openapi_generator.config.parameter_union import ArgumentConfiguration
+from pydantic_openapi_generator.config.retry import RetryFactory
 
 
 class PydanticOpenAPIGeneratorConfig(BaseModel):
@@ -11,6 +12,8 @@ class PydanticOpenAPIGeneratorConfig(BaseModel):
 
     parameters: list[ArgumentConfiguration] = Field(default_factory=list)
     custom_kwargs: list[CustomKwargConfiguration] = Field(default_factory=list)
+    default_timeout: float = 30.0
+    retry: RetryFactory | None = None
 
     def parameter_configuration_for(self, parameter_name: str) -> BaseArgumentConfiguration:
         configured = self.parameters_by_name().get(parameter_name)

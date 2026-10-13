@@ -1,3 +1,4 @@
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Union
 
@@ -154,11 +155,18 @@ def write_data(data: ConversionResult, output: Union[str, Path], formatter: Form
     Creates:
       - models/ (and models/__init__.py)
       - clients/ (and clients/__init__.py)
+      - utils/retry.py (and utils/__init__.py)
       - exceptions (package root/__init__.py)
       - __init__.py (package root)
     """
     out = Path(output)
     out.mkdir(parents=True, exist_ok=True)
+
+    utils_path = out / "utils"
+    utils_path.mkdir(parents=True, exist_ok=True)
+    retry_source = files("pydantic_openapi_generator.config").joinpath("retry.py").read_text()
+    write_code(utils_path / "retry.py", retry_source, formatter)
+    write_code(utils_path / "__init__.py", "from .retry import RetryFactory\n", formatter)
 
     # ----------------------------
     # models/
