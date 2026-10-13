@@ -8,17 +8,11 @@ import json
 
 import httpx
 from pydantic import BaseModel, Field, SecretStr, TypeAdapter
-try:
-    from httpx_retries import Retry, RetryTransport
-except ImportError:
-    Retry = Any  # type: ignore[misc, assignment]
-    RetryTransport = None  # type: ignore[assignment]
 
 from ..models import *
+from ..utils.retry import RetryFactory
 
 {% set _base_url = servers[0].url if servers|length > 0 else "/" %}
-_DEFAULT_TIMEOUT = {{ default_timeout | python_repr }}
-_DEFAULT_RETRY = {{ default_retry | python_repr }}
 
 {% macro deserialize_response(item, indent) -%}
 {% if item.body_kind == "empty" -%}
@@ -37,21 +31,17 @@ _DEFAULT_RETRY = {{ default_retry | python_repr }}
 {% endmacro %}
 
 
-def _default_retry() -> Optional[Retry]:
-    if _DEFAULT_RETRY is None:
-        return None
-    if RetryTransport is None:
-        raise ImportError("httpx-retries is required when retry configuration is enabled")
-    return Retry(**_DEFAULT_RETRY)
-
-
 class AsyncClient(BaseModel):
     model_config = {"validate_assignment": True, "arbitrary_types_allowed": True}
 
     base_url: str = "{{ _base_url }}"
     verify: Union[bool, str] = True
-    timeout: Union[float, httpx.Timeout, None] = Field(default_factory=lambda: httpx.Timeout(_DEFAULT_TIMEOUT))
-    retry: Optional[Retry] = Field(default_factory=_default_retry)
+    timeout: Union[float, httpx.Timeout, None] = {{ default_timeout | python_repr }}
+{% if default_retry is not none %}
+    retry: Optional[RetryFactory] = Field(default_factory=lambda: RetryFactory(**{{ default_retry | python_repr }}))
+{% else %}
+    retry: Optional[RetryFactory] = None
+{% endif %}
 {% if env_token_name is none %}
     access_token: Optional[str] = None
 {% endif %}
@@ -84,13 +74,6 @@ class AsyncClient(BaseModel):
         raise NotImplementedError
 
 {% endfor %}
-    def _retry_transport(self) -> Optional[httpx.AsyncBaseTransport]:
-        if self.retry is None:
-            return None
-        if RetryTransport is None:
-            raise ImportError("httpx-retries is required when retry configuration is enabled")
-        return RetryTransport(retry=self.retry)
-
 {% for op in operations %}
     async def {{ op.operation_id }}(self{% if op.params %}, {{ op.params }}{% endif %}) -> {%- if op.is_sse -%}
 AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{% if op.sse_data_handler.list_type %}list[{{ op.sse_data_handler.list_type }}]{% else %}{{ op.sse_data_handler.type.converted_type }}{% endif %}{% else %}dict[str, Any]{% endif %}, None]
@@ -150,7 +133,7 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
             base_url=base_url,
             verify=self.verify,
             timeout=self.timeout,
-            transport=self._retry_transport(),
+            transport=self.retry.get_transport() if self.retry is not None else None,
         ) as client:
             async with client.stream(
                 "{{ op.method }}",
@@ -203,7 +186,7 @@ AsyncGenerator[str | {% if op.sse_data_handler and op.sse_data_handler.type %}{%
             base_url=base_url,
             verify=self.verify,
             timeout=self.timeout,
-            transport=self._retry_transport(),
+            transport=self.retry.get_transport() if self.retry is not None else None,
         ) as client:
             response = await client.request(
                 "{{ op.method }}",

@@ -17,6 +17,8 @@ from openapi_pydantic.v3.v3_1 import Schema as Schema31
 from pydantic import ValidationError
 
 from pydantic_openapi_generator.common import HTTPLibrary
+from pydantic_openapi_generator.config.generator_config import PydanticOpenAPIGeneratorConfig
+from pydantic_openapi_generator.config.retry import RetryFactory
 from pydantic_openapi_generator.generate_data import generate_data
 from pydantic_openapi_generator.language_converters.python.client_generator import (
     _body_kind_for_content,
@@ -392,7 +394,8 @@ def test_generated_clients_use_configured_default_timeout(
     }
 
 
-def test_generated_clients_build_configured_retry_policy(monkeypatch):
+@pytest.mark.parametrize("async_client", [False, True])
+def test_generated_clients_build_configured_retry_policy(monkeypatch, async_client):
     retry_instances: list[Any] = []
     transport_instances: list[Any] = []
     fake_httpx_retries = ModuleType("httpx_retries")
@@ -424,9 +427,20 @@ retry:
     - POST
 """
     for package_name in _generated_package(config_content):
-        client_module = importlib.import_module(f"{package_name}.clients.sync_client")
-        client = client_module.SyncClient()
-        result = client.getThing(X_Test_Header="required")
+        retry_module = importlib.import_module(f"{package_name}.utils.retry")
+        client_module = importlib.import_module(
+            f"{package_name}.clients.{'async_client' if async_client else 'sync_client'}"
+        )
+        client_type = client_module.AsyncClient if async_client else client_module.SyncClient
+        client = client_type.model_validate_json("{}")
+        assert isinstance(client.retry, retry_module.RetryFactory)
+        assert retry_module.RetryFactory.model_json_schema() == RetryFactory.model_json_schema()
+        assert isinstance(PydanticOpenAPIGeneratorConfig(retry=client.retry.model_dump()).retry, RetryFactory)
+        client = client_type.model_validate_json(client.model_dump_json())
+        if async_client:
+            result = asyncio.run(client.getThing(X_Test_Header="required"))
+        else:
+            result = client.getThing(X_Test_Header="required")
 
     assert result.message == "partial"
     assert retry_instances[0].kwargs == {
@@ -439,6 +453,34 @@ retry:
         "backoff_jitter": 1.0,
     }
     assert transport_instances[0].retry is retry_instances[0]
+
+
+@pytest.mark.parametrize("async_client", [False, True])
+@pytest.mark.parametrize("config_content", [None, "retry:\n  total: 4\n"])
+def test_generated_clients_accept_retry_configuration_from_json(async_client, config_content):
+    for package_name in _generated_package(config_content):
+        client_module = importlib.import_module(
+            f"{package_name}.clients.{'async_client' if async_client else 'sync_client'}"
+        )
+        client_type = client_module.AsyncClient if async_client else client_module.SyncClient
+        client = client_type.model_validate_json(
+            '{"retry": {"total": 2, "backoff_factor": 0.25, "status_forcelist": [503]}}'
+        )
+        assert client.retry.total == 2
+        assert client.retry.backoff_factor == 0.25
+        assert client.retry.status_forcelist == [503]
+        restored = client_type.model_validate_json(client.model_dump_json())
+        assert restored.retry == client.retry
+        assert restored.timeout == 30.0
+        assert client_type.model_validate_json('{"retry": null}').retry is None
+        source = inspect.getsource(client_module)
+        assert "_DEFAULT_TIMEOUT" not in source
+        assert "_DEFAULT_RETRY" not in source
+        assert "_retry_transport" not in source
+        with pytest.raises(ValidationError):
+            client_type.model_validate_json('{"retry": {"total": -1}}')
+        with pytest.raises(ValidationError):
+            client_type.model_validate_json('{"retry": {"unknown_option": true}}')
 
 
 @pytest.mark.respx(assert_all_called=False, assert_all_mocked=True)

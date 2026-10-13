@@ -91,7 +91,19 @@ retry:
 ```
 
 When `retry` is configured, the generated client project must include
-`httpx-retries`.
+`httpx-retries`. Retry settings use the same Pydantic `RetryFactory` model in the
+generator configuration and the generated package's `utils/retry.py`.
+
+Clients also accept retry settings directly from JSON:
+
+```python
+client = AsyncClient.model_validate_json(
+    '{"timeout": 30.0, "retry": {"total": 3, "backoff_factor": 0.5}}'
+)
+```
+
+`RetryFactory.get_retry()` constructs the `httpx-retries` policy, and
+`get_transport()` constructs its transport. Set `retry` to `null` to disable retries.
 
 ## Roadmap
 
