@@ -65,7 +65,10 @@ _UPPER_LIMITS = {"maximum", "maxLength", "maxItems"}
 
 def _merge_allof_property(left: Schema | Reference, right: Schema | Reference, path: str) -> Schema | Reference:
     """Intersect supported property assertions; fail instead of discarding constraints."""
-    if left == right:
+    for definition in (left, right):
+        if "const" in definition.model_fields_set and getattr(definition, "const", None) is None:
+            raise ValueError(f"Conflicting allOf property {path}: unsupported null const intersection")
+    if left == right and isinstance(left, (Reference30, Reference31)):
         return left
     if not isinstance(left, (Schema30, Schema31)) or not isinstance(right, (Schema30, Schema31)):
         raise ValueError(f"Conflicting allOf property {path}: incompatible references or schemas")
@@ -89,6 +92,8 @@ def _merge_allof_property(left: Schema | Reference, right: Schema | Reference, p
             merged[key] = "integer" if "integer" in (merged[key], value) else "number"
         elif key in {"type", "const"} and key not in merged:
             merged[key] = value
+        elif key == "const" and type(merged[key]) is not type(value):
+            raise ValueError(f"Conflicting allOf property {path}: unsupported const intersection")
         elif key not in merged or merged[key] != value:
             raise ValueError(f"Conflicting allOf property {path}: unsupported intersection for {key}")
 
@@ -102,8 +107,28 @@ def _merge_allof_property(left: Schema | Reference, right: Schema | Reference, p
     for lower, upper in (("minimum", "maximum"), ("minLength", "maxLength"), ("minItems", "maxItems")):
         if lower in merged and upper in merged and merged[lower] > merged[upper]:
             raise ValueError(f"Conflicting allOf property {path}: {lower} exceeds {upper}")
-    if "const" in merged and "enum" in merged and merged["const"] not in merged["enum"]:
+    if (
+        "const" in merged
+        and "enum" in merged
+        and not any(type(merged["const"]) is type(value) and merged["const"] == value for value in merged["enum"])
+    ):
         raise ValueError(f"Conflicting allOf property {path}: const is outside enum")
+    literal_values = [merged["const"]] if "const" in merged else merged.get("enum", [])
+    schema_types = merged.get("type", [])
+    if not isinstance(schema_types, list):
+        schema_types = [schema_types]
+    literal_types = {
+        "string": (str,),
+        "integer": (int,),
+        "number": (int, float),
+        "boolean": (bool,),
+        "null": (type(None),),
+    }
+    for value in literal_values:
+        if isinstance(value, (dict, list)) or (
+            schema_types and not any(type(value) in literal_types.get(kind, ()) for kind in schema_types)
+        ):
+            raise ValueError(f"Conflicting allOf property {path}: unsupported or incompatible literal type")
     return type(left).model_validate(merged)
 
 

@@ -405,3 +405,30 @@ def test_named_allof_rejects_unsupported_assertions_instead_of_empty_model(opena
     components = _components(openapi_version, {"Composed": {"allOf": [member]}})
     with pytest.raises(NotImplementedError, match="(?i)object.*allof|allof.*object"):
         model_generator.generate_models(components)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_allof_rejects_enum_values_incompatible_with_intersected_type(openapi_version, reverse):
+    members = [
+        {"properties": {"value": {"type": "string"}}},
+        {"properties": {"value": {"enum": [1, 2]}}},
+    ]
+    if reverse:
+        members.reverse()
+    components = _components(openapi_version, {"Child": {"allOf": members}})
+    with pytest.raises(ValueError, match="incompatible literal type"):
+        model_generator.generate_models(components)
+
+
+@pytest.mark.parametrize("version", ["3.1.0", "3.1.1"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_allof_rejects_null_const_intersections_instead_of_discarding_const(version, reverse):
+    members = [
+        {"properties": {"value": {"const": None}}},
+        {"properties": {"value": {"const": "a"}}},
+    ]
+    if reverse:
+        members.reverse()
+    components = _components(version, {"Child": {"allOf": members}})
+    with pytest.raises(ValueError, match="unsupported null const intersection"):
+        model_generator.generate_models(components)
