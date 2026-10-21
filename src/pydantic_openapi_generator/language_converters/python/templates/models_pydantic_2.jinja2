@@ -1,12 +1,29 @@
+{% if defer_model_imports %}
+from __future__ import annotations
+{% endif %}
 from typing import *
 from pydantic import BaseModel, Field
 {% for property in properties %}
 {% if property.type.import_types is not none %}
 {% for import_type in property.type.import_types %}
+{% if not defer_model_imports or not import_type.startswith("from .") or import_type in runtime_model_imports %}
 {{ import_type }}
+{% endif %}
 {% endfor %}
 {% endif %}
 {% endfor %}
+
+{% if defer_model_imports %}
+if TYPE_CHECKING:
+    pass
+{% for property in properties %}
+{% for import_type in property.type.import_types or [] %}
+{% if import_type.startswith("from .") and import_type not in runtime_model_imports %}
+    {{ import_type }}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% endif %}
 
 class {{ schema_name }}(BaseModel):
     """

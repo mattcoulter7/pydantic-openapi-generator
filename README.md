@@ -103,6 +103,27 @@ client = AsyncClient.model_validate_json('{"timeout": 30.0, "retry": {"total": 3
 `RetryFactory.get_retry()` constructs the `httpx-retries` policy, and
 `get_transport()` constructs its transport. Set `retry` to `null` to disable retries.
 
+### Polymorphic models
+
+For Pydantic v2, an object schema with a discriminator and `allOf` descendants
+generates a reusable alias such as `PartyVariant`. References to that schema,
+including response bodies, array items, dictionary values, and nullable wrappers,
+use the alias to select the concrete model during validation. Transitive
+descendants and intermediate ancestors are supported, and recursive references
+are resolved after the generated models load.
+
+Explicit discriminator mappings take precedence over local `const` or `enum`
+tags and implicit component names. Base variants are included when their tags
+are permitted by the schema. Unknown or missing tags fail validation; ambiguous
+mappings and generated alias name collisions fail generation.
+
+The aliases use Pydantic callable discriminators with tagged choices. Concrete
+model fields retain their declared constraints: an inferred dispatch tag does
+not introduce a new `Literal` restriction on direct model construction. Ordinary
+`allOf` schemas without a discriminator continue to generate flattened models.
+This automatic dispatch requires Pydantic v2; v1 generation reports an explicit
+unsupported-feature error for these hierarchies.
+
 ## Roadmap
 
 - Support for all commonly used http libraries in the python ecosystem (~~requests~~, urllib, ...)

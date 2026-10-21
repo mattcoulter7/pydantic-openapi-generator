@@ -143,6 +143,7 @@ class Model(BaseModel):
     content: str
     openapi_object: Optional[Schema] = None
     properties: List[Property] = []
+    defer_model_imports: bool = False
 
 
 class ConversionResult(BaseModel):

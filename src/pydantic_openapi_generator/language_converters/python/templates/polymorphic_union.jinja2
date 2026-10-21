@@ -1,0 +1,39 @@
+from collections.abc import Mapping
+from typing import Annotated, ForwardRef, Union
+
+from pydantic import BeforeValidator, Discriminator, Tag
+from pydantic_core import PydanticCustomError
+
+__all__ = [{{ alias_name | python_repr }}]
+
+
+def _discriminator(value):
+    if isinstance(value, Mapping):
+        return value.get({{ discriminator_key | python_repr }})
+    return getattr(value, {{ discriminator_key | normalize_symbol | python_repr }}, None)
+
+
+{% if choices | length == 1 %}
+def _validate_tag(value):
+    tag = _discriminator(value)
+    if tag is None:
+        raise PydanticCustomError("union_tag_not_found", {{ ("Missing discriminator " + discriminator_key) | python_repr }})
+    if tag != {{ choices[0][0] | python_repr }}:
+        raise PydanticCustomError("union_tag_invalid", {{ ("Invalid discriminator " + discriminator_key) | python_repr }})
+    return value
+
+
+{{ alias_name }} = Annotated[
+    ForwardRef({{ choices[0][1] | python_repr }}, module=__package__ + {{ ('.' + choices[0][1]) | python_repr }}),
+    BeforeValidator(_validate_tag),
+]
+{% else %}
+{{ alias_name }} = Annotated[
+    Union[
+{% for tag, model in choices %}
+        Annotated[ForwardRef({{ model | python_repr }}, module=__package__ + {{ ('.' + model) | python_repr }}), Tag({{ tag | python_repr }})],
+{% endfor %}
+    ],
+    Discriminator(_discriminator),
+]
+{% endif %}
