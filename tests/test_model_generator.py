@@ -239,7 +239,8 @@ def test_type_converter_all_of_reference():
             Schema(type=DataType.STRING),
         ]
     )
-    assert type_converter(schema, True).converted_type == "Tuple[test_name,str]"
+    with pytest.raises(NotImplementedError, match="allOf"):
+        type_converter(schema, True)
 
     schema = Schema(
         oneOf=[
@@ -275,14 +276,9 @@ def test_type_converter_of_type(test_openapi_types, expected_python_types):
     # Generate Schema object from test_openapi_types
     schema = Schema(allOf=[Schema(type=i) for i in test_openapi_types])
 
-    assert (
-        type_converter(schema, True).converted_type
-        == "Tuple[" + expected_python_types + "]"
-    )
-    assert (
-        type_converter(schema, False).converted_type
-        == "Optional[Tuple[" + expected_python_types + "]]"
-    )
+    for required in (True, False):
+        with pytest.raises(NotImplementedError, match="allOf"):
+            type_converter(schema, required)
 
     schema = Schema(oneOf=[Schema(type=i) for i in test_openapi_types])
 
@@ -337,23 +333,6 @@ def test_type_converter_of_type(test_openapi_types, expected_python_types):
                 default=None,
             ),
         ),
-        (
-            "SomeModel",
-            "SomeModel",
-            Schema(allOf=[Reference(ref="#/components/schemas/SomeModel")]),
-            Schema(type=DataType.OBJECT, required=["SomeModel"]),
-            Property(
-                name="SomeModel",
-                type=TypeConversion(
-                    original_type="tuple<#/components/schemas/SomeModel>",
-                    converted_type='"SomeModel"',
-                    import_types=None,
-                ),
-                required=True,
-                import_type=[],
-                default=None,
-            ),
-        ),
     ],
 )
 def test_type_converter_property(
@@ -365,6 +344,14 @@ def test_type_converter_property(
         )
         == expected_property
     )
+
+
+def test_type_converter_property_inline_allof_is_unsupported():
+    schema = Schema(allOf=[Reference(ref="#/components/schemas/SomeModel")])
+    parent = Schema(type=DataType.OBJECT, required=["SomeModel"])
+
+    with pytest.raises(NotImplementedError, match="allOf"):
+        _generate_property_from_schema("SomeModel", "SomeModel", schema, parent)
 
 
 @pytest.mark.parametrize(

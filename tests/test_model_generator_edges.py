@@ -8,10 +8,9 @@ from pydantic_openapi_generator.language_converters.python.model_generator impor
 
 
 def test_type_converter_allof_single():
-    # Single allOf element path (len(conversions)==1)
     schema = Schema(allOf=[Schema(type=DataType.STRING)])
-    tc = type_converter(schema, True)
-    assert tc.converted_type == "str"
+    with pytest.raises(NotImplementedError, match="allOf"):
+        type_converter(schema, True)
 
 
 def test_type_converter_oneof_single():
@@ -57,23 +56,17 @@ def test_type_converter_nested_allof_oneof_anyof():
         anyOf=[Schema(type=DataType.BOOLEAN), Schema(type=DataType.NUMBER)]
     )
     outer = Schema(allOf=[inner_oneof, inner_anyof])
-    tc = type_converter(outer, True)
-    # Expect Tuple[...] combining Union[...] forms from nested composites
-    assert tc.converted_type.startswith("Tuple[")
-    assert (
-        "Union[str,int]" in tc.converted_type or "Union[int,str]" in tc.converted_type
-    )
+    with pytest.raises(NotImplementedError, match="allOf"):
+        type_converter(outer, True)
 
 
 def test_type_converter_self_reference_in_allof():
-    # Self reference branch (import_types None path) by referencing model name
     ref_name = "MyModel"
     from openapi_pydantic.v3 import Reference
 
     schema = Schema(allOf=[Reference(ref=f"#/components/schemas/{ref_name}")])
-    tc = type_converter(schema, True, model_name=ref_name)
-    # Single conversion path returns bare quoted self type
-    assert tc.converted_type == '"' + ref_name + '"'
+    with pytest.raises(NotImplementedError, match="allOf"):
+        type_converter(schema, True, model_name=ref_name)
 
 
 def test_type_converter_mixed_ref_and_schema_anyof():
@@ -93,7 +86,6 @@ def test_type_converter_mixed_ref_and_schema_anyof():
 
 
 def test_type_converter_allof_only_references_optional():
-    # allOf with only references and outer required False -> Optional[Tuple[...]]
     from openapi_pydantic.v3 import Reference
 
     schema = Schema(
@@ -102,9 +94,8 @@ def test_type_converter_allof_only_references_optional():
             Reference(ref="#/components/schemas/BModel"),
         ]
     )
-    tc = type_converter(schema, False)
-    assert tc.converted_type.startswith("Optional[Tuple[")
-    assert "AModel" in tc.converted_type and "BModel" in tc.converted_type
+    with pytest.raises(NotImplementedError, match="allOf"):
+        type_converter(schema, False)
 
 
 def test_type_converter_anyof_single():
@@ -124,10 +115,9 @@ def test_type_converter_unknown_list_first_type_fallback():
 
 
 def test_type_converter_allof_single_reference_self_optional():
-    # allOf with single self reference and required False -> Optional["ModelName"]
     from openapi_pydantic.v3 import Reference
 
     name = "SelfRefModel"
     schema = Schema(allOf=[Reference(ref=f"#/components/schemas/{name}")])
-    tc = type_converter(schema, False, model_name=name)
-    assert tc.converted_type == f'Optional["{name}"]'
+    with pytest.raises(NotImplementedError, match="allOf"):
+        type_converter(schema, False, model_name=name)

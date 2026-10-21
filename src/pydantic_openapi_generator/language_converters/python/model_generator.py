@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import itertools
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 import click
@@ -48,6 +49,156 @@ Components = Union[Components30, Components31]
 
 # Map of wrapper component name -> TypeConversion to use instead of generating wrapper module
 _REFERENCE_TYPE_OVERRIDES: dict[str, TypeConversion] = {}
+
+
+@dataclass
+class ResolvedSchema:
+    properties: dict[str, Schema | Reference] = field(default_factory=dict)
+    required: set[str] = field(default_factory=set)
+    intersected_properties: set[str] = field(default_factory=set)
+
+
+_SCHEMA_ANNOTATIONS = {"title", "description", "default", "example", "examples", "deprecated", "externalDocs", "xml"}
+_LOWER_LIMITS = {"minimum", "minLength", "minItems"}
+_UPPER_LIMITS = {"maximum", "maxLength", "maxItems"}
+
+
+def _merge_allof_property(left: Schema | Reference, right: Schema | Reference, path: str) -> Schema | Reference:
+    """Intersect supported property assertions; fail instead of discarding constraints."""
+    if left == right:
+        return left
+    if not isinstance(left, (Schema30, Schema31)) or not isinstance(right, (Schema30, Schema31)):
+        raise ValueError(f"Conflicting allOf property {path}: incompatible references or schemas")
+
+    merged = left.model_dump(exclude_none=True)
+    for key, value in right.model_dump(exclude_none=True).items():
+        if key in _SCHEMA_ANNOTATIONS:
+            merged[key] = value
+        elif key in _LOWER_LIMITS:
+            merged[key] = max(merged.get(key, value), value)
+        elif key in _UPPER_LIMITS:
+            merged[key] = min(merged.get(key, value), value)
+        elif key == "enum":
+            if key in merged:
+                merged[key] = [item for item in merged[key] if any(type(item) is type(v) and item == v for v in value)]
+                if not merged[key]:
+                    raise ValueError(f"Conflicting allOf property {path}: empty enum intersection")
+            else:
+                merged[key] = value
+        elif key == "type" and merged.get(key) in ("integer", "number") and value in ("integer", "number"):
+            merged[key] = "integer" if "integer" in (merged[key], value) else "number"
+        elif key in {"type", "const"} and key not in merged:
+            merged[key] = value
+        elif key not in merged or merged[key] != value:
+            raise ValueError(f"Conflicting allOf property {path}: unsupported intersection for {key}")
+
+    # Check both sides: an unsupported assertion must not slip through simply
+    # because it appeared in the first definition rather than the second.
+    supported = _SCHEMA_ANNOTATIONS | _LOWER_LIMITS | _UPPER_LIMITS | {"type", "enum", "const"}
+    for key in left.model_dump(exclude_none=True):
+        if key not in supported and getattr(right, key, None) != getattr(left, key, None):
+            raise ValueError(f"Conflicting allOf property {path}: unsupported intersection for {key}")
+
+    for lower, upper in (("minimum", "maximum"), ("minLength", "maxLength"), ("minItems", "maxItems")):
+        if lower in merged and upper in merged and merged[lower] > merged[upper]:
+            raise ValueError(f"Conflicting allOf property {path}: {lower} exceeds {upper}")
+    if "const" in merged and "enum" in merged and merged["const"] not in merged["enum"]:
+        raise ValueError(f"Conflicting allOf property {path}: const is outside enum")
+    return type(left).model_validate(merged)
+
+
+def _resolve_allof_schema(
+    schema: Schema,
+    schemas: Mapping[str, Schema | Reference],
+    *,
+    stack: tuple[str, ...] = (),
+    in_allof: bool = False,
+) -> ResolvedSchema:
+    """Collect object fields across allOf without following ordinary field references."""
+    result = ResolvedSchema()
+
+    def merge(part: ResolvedSchema) -> None:
+        result.intersected_properties.update(part.intersected_properties)
+        for prop_name, prop_schema in part.properties.items():
+            if prop_name in result.properties:
+                result.properties[prop_name] = _merge_allof_property(
+                    result.properties[prop_name], prop_schema, ".".join((*stack, prop_name))
+                )
+                result.intersected_properties.add(prop_name)
+            else:
+                result.properties[prop_name] = prop_schema
+        result.required.update(part.required)
+
+    for member in schema.allOf or []:
+        if isinstance(member, (Reference30, Reference31)):
+            prefix = "#/components/schemas/"
+            if not member.ref.startswith(prefix) or "/" in member.ref[len(prefix) :]:
+                raise ValueError(f"Unsupported allOf reference: {member.ref}")
+            name = member.ref[len(prefix) :].replace("~1", "/").replace("~0", "~")
+            if name in stack:
+                raise ValueError("Circular allOf composition: " + " -> ".join((*stack, name)))
+            target = schemas.get(name)
+            if not isinstance(target, (Schema30, Schema31)):
+                raise ValueError(f"Unresolved allOf schema: {member.ref}")
+            merge(_resolve_allof_schema(target, schemas, stack=(*stack, name), in_allof=True))
+        elif isinstance(member, (Schema30, Schema31)):
+            merge(_resolve_allof_schema(member, schemas, stack=stack, in_allof=True))
+        else:
+            raise TypeError(f"Unsupported allOf member: {type(member)!r}")
+
+    # Non-object intersections need a different representation. Never turn them
+    # into an empty BaseModel while pretending their assertions were preserved.
+    if schema.allOf is not None or in_allof:
+        supported = _SCHEMA_ANNOTATIONS | {
+            "type",
+            "properties",
+            "required",
+            "allOf",
+            "discriminator",
+            "readOnly",
+            "writeOnly",
+        }
+        unsupported = schema.model_dump(exclude_none=True).keys() - supported
+        if schema.type not in (None, "object") or unsupported:
+            raise NotImplementedError("Only object allOf composition is supported for named models")
+    merge(ResolvedSchema(properties=schema.properties or {}, required=set(schema.required or [])))
+    return result
+
+
+def _constrain_allof_property(prop: Property, schema: Schema) -> None:
+    """Render the supported duplicate-property intersection in existing templates."""
+    const = getattr(schema, "const", None)
+    values = [const] if const is not None else getattr(schema, "enum", None)
+    if values:
+        literal = "Literal[" + ", ".join(repr(value) for value in values) + "]"
+        prop.type.converted_type = literal if prop.required else f"Optional[{literal}]"
+        prop.type.import_types = _dedupe_imports((prop.type.import_types or []) + ["from typing import Literal"])
+
+    constraints = {}
+    for key, field_name in (
+        ("minimum", "ge"),
+        ("maximum", "le"),
+        ("minLength", "min_length"),
+        ("maxLength", "max_length"),
+        ("minItems", "min_length"),
+        ("maxItems", "max_length"),
+        ("multipleOf", "multiple_of"),
+        ("pattern", "pattern"),
+    ):
+        value = getattr(schema, key, None)
+        if value is not None:
+            constraints[field_name] = value
+    for key, field_name, inclusive in (("exclusiveMinimum", "gt", "ge"), ("exclusiveMaximum", "lt", "le")):
+        value = getattr(schema, key, None)
+        if isinstance(value, bool):
+            if value and inclusive in constraints:
+                constraints[field_name] = constraints.pop(inclusive)
+        elif value is not None:
+            constraints[field_name] = value
+    if constraints:
+        args = ", ".join(f"{key}={value!r}" for key, value in constraints.items())
+        prop.type.converted_type = f"Annotated[{prop.type.converted_type}, Field({args})]"
+        prop.type.import_types = _dedupe_imports((prop.type.import_types or []) + ["from typing import Annotated"])
 
 
 def _is_null_schema(s: object) -> bool:
@@ -496,42 +647,7 @@ def type_converter(  # noqa: C901
     import_types: Optional[List[str]] = None
 
     if schema.allOf is not None:
-        conversions = []
-        for sub_schema in schema.allOf:
-            if isinstance(sub_schema, Schema30) or isinstance(sub_schema, Schema31):
-                conversions.append(type_converter(sub_schema, True))
-            else:
-                import_type = common.normalize_symbol(sub_schema.ref.split("/")[-1])
-                if import_type == model_name and model_name is not None:
-                    conversions.append(
-                        TypeConversion(
-                            original_type=sub_schema.ref,
-                            converted_type='"' + model_name + '"',
-                            import_types=None,
-                        )
-                    )
-                else:
-                    import_types = [f"from .{import_type} import {import_type}"]
-                    conversions.append(
-                        TypeConversion(
-                            original_type=sub_schema.ref,
-                            converted_type=import_type,
-                            import_types=import_types,
-                        )
-                    )
-
-        original_type = "tuple<" + ",".join([i.original_type for i in conversions]) + ">"
-        if len(conversions) == 1:
-            converted_type = conversions[0].converted_type
-        else:
-            converted_type = "Tuple[" + ",".join([i.converted_type for i in conversions]) + "]"
-
-        converted_type = pre_type + converted_type + post_type
-        # Collect *all* imports from sub-schemas (not just the first), then dedupe
-        import_types = (
-            _dedupe_imports(list(itertools.chain.from_iterable(i.import_types for i in conversions if i.import_types)))
-            or None
-        )
+        raise NotImplementedError("Inline allOf types are unsupported; define a named object component for composition")
 
     elif schema.oneOf is not None or schema.anyOf is not None:
         used = schema.oneOf if schema.oneOf is not None else schema.anyOf
@@ -577,7 +693,7 @@ def type_converter(  # noqa: C901
 
         converted_type = pre_type + converted_type + post_type
         import_types = list(itertools.chain(*[i.import_types for i in conversions if i.import_types is not None]))
-    # We only want to auto convert to datetime if orjson is used throghout the code, otherwise we can not
+    # We only want to auto convert to datetime if orjson is used throughout the code, otherwise we can not
     # serialize it to JSON.
     elif (schema.type == "string" or str(schema.type) == "DataType.STRING") and (
         schema.schema_format is None or not common.get_use_orjson()
@@ -872,20 +988,24 @@ def generate_models(components: Components, pydantic_version: PydanticVersion = 
         # Normal models
         # --------------------------
         properties: List[Property] = []
-        property_iterator = schema_or_reference.properties.items() if schema_or_reference.properties is not None else {}
+        resolved_schema = _resolve_allof_schema(schema_or_reference, components.schemas, stack=(schema_name,))
+        effective_schema = schema_or_reference.model_copy(
+            update={"properties": resolved_schema.properties, "required": sorted(resolved_schema.required)}
+        )
+        property_iterator = resolved_schema.properties.items()
 
         for prop_name, prop_schema in property_iterator:
             # Reference property
             if isinstance(prop_schema, Reference30) or isinstance(prop_schema, Reference31):
-                conv_property = _generate_property_from_reference(name, prop_name, prop_schema, schema_or_reference)
+                conv_property = _generate_property_from_reference(name, prop_name, prop_schema, effective_schema)
                 properties.append(conv_property)
                 continue
 
             # Schema property
-            conv_property = _generate_property_from_schema(name, prop_name, prop_schema, schema_or_reference)
+            conv_property = _generate_property_from_schema(name, prop_name, prop_schema, effective_schema)
 
             # --------------------------
-            # NEW: const / single-value enum -> Literal[...] with default
+            # const / single-value enum constrains values, not field presence.
             # --------------------------
             if isinstance(prop_schema, (Schema30, Schema31)):
                 const_val = getattr(prop_schema, "const", None)
@@ -898,17 +1018,17 @@ def generate_models(components: Components, pydantic_version: PydanticVersion = 
                     literal_val = enum_vals[0]
 
                 if literal_val is not None:
-                    # make sure discriminator is present for unions: required + default
-                    conv_property.required = True
-                    conv_property.default = repr(literal_val)
-
+                    literal_type = f"Literal[{literal_val!r}]"
                     conv_property.type = TypeConversion(
                         original_type=conv_property.type.original_type,
-                        converted_type=f"Literal[{repr(literal_val)}]",
+                        converted_type=literal_type if conv_property.required else f"Optional[{literal_type}]",
                         import_types=_dedupe_imports(
                             (conv_property.type.import_types or []) + ["from typing import Literal"]
                         ),
                     )
+
+            if prop_name in resolved_schema.intersected_properties:
+                _constrain_allof_property(conv_property, prop_schema)
 
             # If this model is a discriminated union member, and this property
             # is the discriminator key, make it a Literal[...] with a default
