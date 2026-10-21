@@ -357,7 +357,7 @@ def test_allof_inherits_discriminator_field_without_inventing_subtype_literal(op
         openapi_version,
         {
             "Party": {
-                "discriminator": {"propertyName": "party_type"},
+                "discriminator": {"propertyName": "party_type", "mapping": {"person": "#/components/schemas/Driver"}},
                 "required": ["party_type"],
                 "properties": {"party_type": {"type": "string", "enum": ["person", "business"]}},
             },

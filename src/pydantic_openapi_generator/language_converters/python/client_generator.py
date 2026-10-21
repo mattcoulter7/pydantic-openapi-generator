@@ -648,10 +648,11 @@ def _response_variant_from_schema(
         )
 
     if is_reference_type(inner_schema):
+        conversion = type_converter(inner_schema, True)
         type_conv = TypeConversion(
             original_type=inner_schema.ref,  # type: ignore
-            converted_type=inner_schema.ref.split("/")[-1],  # type: ignore
-            import_types=[inner_schema.ref.split("/")[-1]],  # type: ignore
+            converted_type=conversion.converted_type,
+            import_types=[conversion.converted_type],
         )
         return ResponseVariant(
             status_code=status_code,

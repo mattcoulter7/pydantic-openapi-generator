@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from .common import FormatOptions, Formatter, HTTPLibrary, PydanticVersion
 from .config.generator_config import PydanticOpenAPIGeneratorConfig
 from .config.loader import load_config
+from .language_converters.python.jinja_config import MODELS_INIT_TEMPLATE, create_jinja_env
 from .models import ConversionResult
 from .parsers import (
     generate_code_3_0,
@@ -179,11 +180,10 @@ def write_data(data: ConversionResult, output: Union[str, Path], formatter: Form
         model_files.append(model.file_name)
         write_code(models_path / f"{model.file_name}.py", model.content, formatter)
 
-    write_code(
-        models_path / "__init__.py",
-        "\n".join([f"from .{f} import *" for f in model_files]) + ("\n" if model_files else ""),
-        formatter,
-    )
+    model_init = "\n".join([f"from .{f} import *" for f in model_files]) + ("\n" if model_files else "")
+    if any(model.defer_model_imports for model in data.models):
+        model_init = create_jinja_env().get_template(MODELS_INIT_TEMPLATE).render(model_files=model_files)
+    write_code(models_path / "__init__.py", model_init, formatter)
 
     # ----------------------------
     # clients/

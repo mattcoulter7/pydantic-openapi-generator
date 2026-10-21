@@ -17,6 +17,7 @@ from pydantic_openapi_generator.language_converters.python.exception_generator i
 from pydantic_openapi_generator.language_converters.python.model_generator import (
     generate_models,
     generate_response_union_alias_models,
+    reset_reference_overrides,
 )
 from pydantic_openapi_generator.models import ConversionResult, LibraryConfig
 
@@ -39,6 +40,7 @@ def generator(
 
     common.set_use_orjson(use_orjson)
     common.set_custom_template_path(custom_template_path)
+    reset_reference_overrides()
 
     if data.components is not None:
         models = generate_models(data.components, pydantic_version)

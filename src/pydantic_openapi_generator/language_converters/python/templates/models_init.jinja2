@@ -1,0 +1,12 @@
+"""Load model definitions before resolving recursive discriminator families."""
+
+from pydantic import BaseModel as _BaseModel
+
+{% for name in model_files %}
+from .{{ name }} import *
+{% endfor %}
+
+_namespace = dict(globals())
+for _model in _namespace.values():
+    if isinstance(_model, type) and issubclass(_model, _BaseModel) and _model.__module__.startswith(__name__ + "."):
+        _model.model_rebuild(_types_namespace=_namespace)

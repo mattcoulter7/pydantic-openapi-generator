@@ -37,6 +37,7 @@ from pydantic_openapi_generator.language_converters.python.jinja_config import (
     ENUM_TEMPLATE,
     MODELS_TEMPLATE,
     MODELS_TEMPLATE_PYDANTIC_V2,
+    POLYMORPHIC_UNION_TEMPLATE,
     create_jinja_env,
 )
 from pydantic_openapi_generator.models import Model, Property, TypeConversion
@@ -49,6 +50,147 @@ Components = Union[Components30, Components31]
 
 # Map of wrapper component name -> TypeConversion to use instead of generating wrapper module
 _REFERENCE_TYPE_OVERRIDES: dict[str, TypeConversion] = {}
+_POLYMORPHIC_REFERENCES: dict[str, TypeConversion] = {}
+
+
+def reset_reference_overrides() -> None:
+    """Start a generation with no reference state from a previous contract."""
+    _REFERENCE_TYPE_OVERRIDES.clear()
+    _POLYMORPHIC_REFERENCES.clear()
+
+
+@dataclass(frozen=True)
+class PolymorphicFamily:
+    discriminator_key: str
+    choices: tuple[tuple[str, str], ...]
+
+
+def _local_schema_name(ref: str) -> str:
+    prefix = "#/components/schemas/"
+    if not ref.startswith(prefix) or "/" in ref[len(prefix) :]:
+        raise ValueError(f"Unsupported polymorphic schema reference: {ref}")
+    return ref[len(prefix) :].replace("~1", "/").replace("~0", "~")
+
+
+def _allof_parents(schema: Schema | Reference) -> set[str]:
+    parents: set[str] = set()
+    for member in getattr(schema, "allOf", None) or []:
+        if isinstance(member, (Reference30, Reference31)):
+            if member.ref.startswith("#/components/schemas/"):
+                parents.add(_local_schema_name(member.ref))
+        else:
+            parents.update(_allof_parents(member))
+    return parents
+
+
+def _own_discriminator_values(schema: Schema, key: str) -> Optional[list[str]]:
+    """Inspect local assertions without mistaking an inherited enum for a subtype tag."""
+    prop = (schema.properties or {}).get(key)
+    if isinstance(prop, (Schema30, Schema31)):
+        if "const" in prop.model_fields_set:
+            return [getattr(prop, "const", None)]
+        if prop.enum is not None:
+            return list(prop.enum)
+    for member in schema.allOf or []:
+        if isinstance(member, (Schema30, Schema31)):
+            values = _own_discriminator_values(member, key)
+            if values is not None:
+                return values
+    return None
+
+
+def _discriminator_property(member: str, key: str, schemas: Mapping[str, Schema | Reference]) -> Schema:
+    resolved = _resolve_allof_schema(schemas[member], schemas, stack=(member,))
+    prop = resolved.properties.get(key)
+    if isinstance(prop, (Reference30, Reference31)):
+        prop = schemas.get(_local_schema_name(prop.ref))
+    if not isinstance(prop, (Schema30, Schema31)):
+        raise ValueError(f"Missing discriminator property {key!r} on {member}")
+    if prop.type not in (None, "string"):
+        raise ValueError(f"Discriminator property {member}.{key} must be a string")
+    return prop
+
+
+def _discover_allof_polymorphism(components: Components) -> dict[str, PolymorphicFamily]:
+    """Build tagged reference families only for declared discriminator hierarchies."""
+    schemas = components.schemas or {}
+    children: dict[str, set[str]] = {}
+    for name, schema in schemas.items():
+        for parent in _allof_parents(schema):
+            children.setdefault(parent, set()).add(name)
+
+    def descendants(name: str) -> set[str]:
+        discovered: set[str] = set()
+        pending = list(children.get(name, ()))
+        while pending:
+            child = pending.pop()
+            if child not in discovered:
+                discovered.add(child)
+                pending.extend(children.get(child, ()))
+        return discovered
+
+    families: dict[str, PolymorphicFamily] = {}
+    symbols = {common.normalize_symbol(name) for name in schemas}
+    alias_owners: dict[str, str] = {}
+    for base, base_schema in schemas.items():
+        key = _get_discriminator_key(base_schema)
+        # Existing explicit union generation retains its current behavior.
+        if not key or getattr(base_schema, "oneOf", None) or getattr(base_schema, "anyOf", None):
+            continue
+        subtypes = descendants(base)
+        if not subtypes:
+            continue
+        members = [base, *(name for name in schemas if name in subtypes and name != base)]
+        mapping: dict[str, list[str]] = {}
+        for tag, target in (base_schema.discriminator.mapping or {}).items():
+            target_name = target if target in schemas else _local_schema_name(target)
+            if target_name not in members:
+                raise ValueError(f"Discriminator mapping for {base} targets unrelated or missing schema {target}")
+            mapping.setdefault(target_name, []).append(tag)
+
+        choices: list[tuple[str, str]] = []
+        used_tags: dict[str, str] = {}
+        for member in members:
+            schema = schemas[member]
+            prop = _discriminator_property(member, key, schemas)
+            allowed = [getattr(prop, "const", None)] if "const" in prop.model_fields_set else prop.enum
+            tags = mapping.get(member)
+            if tags is None:
+                own_tags = _own_discriminator_values(schema, key) if member != base else None
+                tags = own_tags if own_tags is not None else [member]
+                if member == base and allowed is not None and member not in allowed:
+                    # A base enum may list only concrete children (e.g. Physical_Item).
+                    continue
+            for tag in tags:
+                if not isinstance(tag, str) or (allowed is not None and tag not in allowed):
+                    raise ValueError(f"Invalid or ambiguous discriminator value {tag!r} for {member}.{key}")
+                if tag in used_tags and used_tags[tag] != member:
+                    raise ValueError(f"Duplicate discriminator value {key}={tag!r}: {used_tags[tag]} and {member}")
+                used_tags[tag] = member
+                choice = (tag, common.normalize_symbol(member))
+                if choice not in choices:
+                    choices.append(choice)
+
+        # Intermediate ancestors inherit the discriminator, so references to
+        # Person can also select Driver without admitting unrelated Party types.
+        for ancestor in members:
+            nested = descendants(ancestor)
+            if not nested:
+                continue
+            permitted = {common.normalize_symbol(name) for name in {ancestor, *nested}}
+            family = PolymorphicFamily(key, tuple(choice for choice in choices if choice[1] in permitted))
+            if not family.choices:
+                raise ValueError(f"No concrete discriminator variants for {ancestor}")
+            alias = common.normalize_symbol(ancestor) + "Variant"
+            if alias in symbols:
+                raise ValueError(f"Polymorphic alias name collision: {alias}")
+            if alias in alias_owners and alias_owners[alias] != ancestor:
+                raise ValueError(f"Polymorphic alias name collision: {alias}")
+            alias_owners[alias] = ancestor
+            if ancestor in families and families[ancestor] != family:
+                raise ValueError(f"Conflicting discriminator hierarchies for {ancestor}")
+            families[ancestor] = family
+    return families
 
 
 @dataclass
@@ -258,6 +400,9 @@ def _build_nullable_wrapper_overrides(components: Components) -> dict[str, TypeC
 
         wrapper_name = common.normalize_symbol(schema_name)
         target_model = common.normalize_symbol(ref.ref.split("/")[-1])
+        polymorphic = _POLYMORPHIC_REFERENCES.get(target_model)
+        if polymorphic is not None:
+            target_model = polymorphic.converted_type
 
         overrides[wrapper_name] = TypeConversion(
             original_type=ref.ref,
@@ -336,6 +481,20 @@ class DiscriminatorBinding:
     enum_name: str
     enum_member: str
     discriminator_key: str
+
+
+def _validate_discriminator_bindings(
+    families: Mapping[str, PolymorphicFamily],
+    bindings: Mapping[str, DiscriminatorBinding],
+    enum_members: Mapping[str, List[Tuple[str, str]]],
+) -> None:
+    for family in families.values():
+        for tag, member in family.choices:
+            binding = bindings.get(member)
+            if binding is not None and binding.discriminator_key == family.discriminator_key:
+                bound_value = dict(enum_members[binding.enum_name])[binding.enum_member]
+                if tag != bound_value:
+                    raise ValueError(f"Conflicting discriminator mappings for {member}: {tag!r} and {bound_value!r}")
 
 
 def _enum_member_name(value: str) -> str:
@@ -644,6 +803,14 @@ def type_converter(  # noqa: C901
                 import_types=override.import_types,
             )
 
+        polymorphic = _POLYMORPHIC_REFERENCES.get(import_type)
+        if polymorphic is not None:
+            return TypeConversion(
+                original_type=schema.ref,
+                converted_type=polymorphic.converted_type if required else f"Optional[{polymorphic.converted_type}]",
+                import_types=polymorphic.import_types,
+            )
+
         if required:
             converted_type = import_type
         else:
@@ -690,25 +857,19 @@ def type_converter(  # noqa: C901
                         converted_type=override.converted_type,
                         import_types=override.import_types,
                     )
+                polymorphic = _POLYMORPHIC_REFERENCES.get(import_type)
+                if polymorphic is not None:
+                    return TypeConversion(
+                        original_type=f"union<{ref.ref},null>",
+                        converted_type=f"Optional[{polymorphic.converted_type}]",
+                        import_types=polymorphic.import_types,
+                    )
                 return TypeConversion(
                     original_type=f"union<{ref.ref},null>",
                     converted_type=f"Optional[{import_type}]",
                     import_types=([f"from .{import_type} import {import_type}"] if import_type != model_name else None),
                 )
-        conversions = []
-        for sub_schema in used:
-            if isinstance(sub_schema, Schema30) or isinstance(sub_schema, Schema31):
-                conversions.append(type_converter(sub_schema, True))
-            else:
-                import_type = common.normalize_symbol(sub_schema.ref.split("/")[-1])
-                import_types = [f"from .{import_type} import {import_type}"]
-                conversions.append(
-                    TypeConversion(
-                        original_type=sub_schema.ref,
-                        converted_type=import_type,
-                        import_types=import_types,
-                    )
-                )
+        conversions = [type_converter(sub_schema, True, model_name) for sub_schema in used]
         original_type = "union<" + ",".join([i.original_type for i in conversions]) + ">"
 
         if len(conversions) == 1:
@@ -937,6 +1098,15 @@ def _generate_property_from_reference(
     ) or force_required
     import_model = common.normalize_symbol(reference.ref.split("/")[-1])
 
+    if import_model in _POLYMORPHIC_REFERENCES or import_model in _REFERENCE_TYPE_OVERRIDES:
+        return Property(
+            name=name,
+            type=type_converter(reference, required, model_name),
+            required=required,
+            default=None if required else "None",
+            import_type=[import_model],
+        )
+
     if import_model == model_name:
         type_conv = TypeConversion(
             original_type=reference.ref,
@@ -968,16 +1138,31 @@ def generate_models(components: Components, pydantic_version: PydanticVersion = 
     """
     models: List[Model] = []
 
+    global _REFERENCE_TYPE_OVERRIDES, _POLYMORPHIC_REFERENCES
+    reset_reference_overrides()
     if components.schemas is None:
         return models
 
     jinja_env = create_jinja_env()
     # Build nullable-wrapper overrides so refs to simple wrappers (X = anyOf[$ref Y, null])
     # are collapsed to Optional[Y] and we avoid generating X.py (which can collide on Windows).
-    global _REFERENCE_TYPE_OVERRIDES
+    polymorphic_families = _discover_allof_polymorphism(components)
+    if polymorphic_families and pydantic_version != PydanticVersion.V2:
+        raise NotImplementedError("allOf discriminator dispatch requires Pydantic v2")
+    _POLYMORPHIC_REFERENCES = {
+        common.normalize_symbol(base): TypeConversion(
+            original_type=base,
+            converted_type=common.normalize_symbol(base) + "Variant",
+            import_types=[
+                f"from .{common.normalize_symbol(base)}Variant import {common.normalize_symbol(base)}Variant"
+            ],
+        )
+        for base in polymorphic_families
+    }
     _REFERENCE_TYPE_OVERRIDES = _build_nullable_wrapper_overrides(components)
 
     discriminator_bindings, enum_members_by_name = _discover_discriminated_unions(components)
+    _validate_discriminator_bindings(polymorphic_families, discriminator_bindings, enum_members_by_name)
 
     # Track alias modules so we only create each once
     alias_models_by_name: Dict[str, Model] = {}
@@ -1127,7 +1312,11 @@ def generate_models(components: Components, pydantic_version: PydanticVersion = 
         template_name = MODELS_TEMPLATE_PYDANTIC_V2 if pydantic_version == PydanticVersion.V2 else MODELS_TEMPLATE
 
         generated_content = jinja_env.get_template(template_name).render(
-            schema_name=name, schema=schema_or_reference, properties=properties
+            schema_name=name,
+            schema=schema_or_reference,
+            properties=properties,
+            defer_model_imports=bool(polymorphic_families),
+            runtime_model_imports={f"from .{enum} import {enum}" for enum in enum_members_by_name},
         )
 
         try:
@@ -1141,7 +1330,23 @@ def generate_models(components: Components, pydantic_version: PydanticVersion = 
                 content=generated_content,
                 openapi_object=schema_or_reference,
                 properties=properties,
+                defer_model_imports=bool(polymorphic_families),
             )
+        )
+
+    for base, family in polymorphic_families.items():
+        alias = _POLYMORPHIC_REFERENCES[common.normalize_symbol(base)].converted_type
+        if alias in alias_models_by_name:
+            raise ValueError(f"Polymorphic alias name collision: {alias}")
+        content = jinja_env.get_template(POLYMORPHIC_UNION_TEMPLATE).render(
+            alias_name=alias, discriminator_key=family.discriminator_key, choices=family.choices
+        )
+        alias_models_by_name[alias] = Model(
+            file_name=alias,
+            content=content,
+            openapi_object=components.schemas[base],
+            properties=[],
+            defer_model_imports=True,
         )
 
     # Ensure enum modules for discriminators are included
